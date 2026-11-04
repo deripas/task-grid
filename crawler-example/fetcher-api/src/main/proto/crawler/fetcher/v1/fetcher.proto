@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package crawler.fetcher.v1;
+
+service Fetcher {
+  rpc Fetch(FetchRequest) returns (stream FetchResponse);
+}
+
+message FetchRequest {
+  string url = 1;
+}
+
+message FetchResponse {
+  bytes content = 1;
+}

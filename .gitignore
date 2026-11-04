@@ -4,14 +4,15 @@ target/
 !**/src/test/**/target/
 .kotlin
 
-### IntelliJ IDEA ###
-.idea/modules.xml
-.idea/jarRepositories.xml
-.idea/compiler.xml
-.idea/libraries/
+### IntelliJ IDEA: only the shared code style is versioned ###
+.idea/*
+!.idea/codeStyles/
 *.iws
 *.iml
 *.ipr
 
 ### Mac OS ###
 .DS_Store
+
+### Local notes, drafts, scratch files ###
+.local/
