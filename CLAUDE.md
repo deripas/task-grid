@@ -20,4 +20,5 @@ in small steps, not 1:1.
 
 ## Build
 
-- `make verify` - build, tests, architecture rules. Maven only via `./mvnw` (no `mvn` in PATH).
+- `make verify` - build, tests, architecture rules (Java and Go). Maven only via `./mvnw` (no `mvn` in PATH).
+- `make it` - integration tests (`*IT`, Maven profile `it`), need Docker; not part of `make verify`.

@@ -1,7 +1,7 @@
 MVN := ./mvnw -B
 SIDECAR := $(MAKE) -C handler-sidecar
 
-.PHONY: help build test verify clean
+.PHONY: help build test verify it image clean
 
 ## help: list targets
 help:
@@ -21,6 +21,14 @@ test:
 verify:
 	$(MVN) clean verify
 	$(SIDECAR) check
+
+## it: integration tests: Java node against the handler-sidecar image (needs Docker); not part of verify
+it:
+	$(MVN) -Pit verify
+
+## image: docker image of handler-sidecar
+image:
+	$(SIDECAR) image
 
 ## clean: remove build output
 clean:

@@ -14,8 +14,8 @@ Agreed decisions - [decisions.md](decisions.md), layout - [structure.md](structu
    sidecar), credits, HRW affinity; in-process gRPC test with a Java sidecar. Lease, large results - later.
 6. `[x]` **handler-sidecar (Go).** One session with one node, credit, raw-codec handler call, results until OK,
    drain by half-close; arch-go rules; `make verify` covers Go too.
-7. `[ ]` **Java - Go smoke test.** A node with `RemoteWorker` and the real `handler-sidecar` binary in front of a test
-   handler: the two sides of `remote.proto` are compatible (session, credit, results, drain).
+7. `[x]` **Java - Go smoke test.** `SidecarCompatibilityIT`: a node with `RemoteWorker` and the real `handler-sidecar`
+   image (Testcontainers) in front of a test handler - results with meta, handler error, drain on SIGTERM; `make it`.
 8. `[ ]` **Fetcher.** Code generation for `fetcher-api`, gRPC server over Apache HttpClient, tests on WireMock.
 9. `[ ]` **Starter.** Spring Boot auto-configuration of a single node.
 10. `[ ]` **url-manager: synchronous `POST /fetch`.** End to end url-manager - sidecar - fetcher,

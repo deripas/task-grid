@@ -78,7 +78,11 @@ in `tools.mod`, so that their dependencies stay out of `go.mod`.
 make check    # vet, tests with -race, arch-go; part of `make verify` of the repository
 make build    # bin/handler-sidecar, static
 make gen      # after a change of remote.proto; needs protoc on PATH
+make image    # docker image task-grid/handler-sidecar:dev (distroless, static binary)
 ```
+
+Compatibility with the Java node - `SidecarCompatibilityIT` of `task-grid-worker-remote`: the image is built from this
+`Dockerfile` and run by Testcontainers (`make it` in the root).
 
 Tests: credit (`internal/sidecar/credit`), status mapping and metadata (`internal/handler`), settings
 (`internal/config`); end to end (`internal/sidecar`: core + real adapters + a fake node over gRPC + the test handler) -
@@ -88,4 +92,4 @@ an attempt beyond credit, drain with an attempt in progress, drain timeout, reco
 ## Not yet
 
 - Sessions with every node of a cluster (DNS), lease (`Extend`), restart detection - with the cluster engine.
-- Large results in blob storage; `RATE_LIMITED` / `RELEASED` statuses; metrics and health probe; Dockerfile.
+- Large results in blob storage; `RATE_LIMITED` / `RELEASED` statuses; metrics and health probe.

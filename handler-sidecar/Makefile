@@ -1,6 +1,7 @@
 BIN := bin/handler-sidecar
+IMAGE ?= task-grid/handler-sidecar:dev
 
-.PHONY: build test arch gen check
+.PHONY: build test arch gen check image
 
 ## build: static binary in bin/, without debug information
 build:
@@ -17,6 +18,10 @@ arch:
 ## gen: regenerate internal/gen from remote.proto (needs protoc on PATH)
 gen:
 	go generate ./internal/gen
+
+## image: docker image $(IMAGE)
+image:
+	docker build -t $(IMAGE) .
 
 ## check: vet, tests, architecture rules
 check:

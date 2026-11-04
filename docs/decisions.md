@@ -115,3 +115,10 @@ queued twice) and an error otherwise (the id is taken by another request).
 - Results above `MAX_RESULT` (4 MiB, the inbound limit of the Java gRPC server) fail until blob storage exists.
 - Go module `github.com/deripas/task-grid/handler-sidecar`; code from `remote.proto` is generated with `protoc` and plugins
   from `tools.mod` and committed, so a plain `go build` needs no protoc.
+
+## D16. Java - Go compatibility is tested against the image
+
+`SidecarCompatibilityIT` runs the real `handler-sidecar` image (built from its `Dockerfile` by Testcontainers) between
+a node and a test handler of the test JVM; the container reaches them through `Testcontainers.exposeHostPorts`.
+It checks the artifact that is deployed, including drain on SIGTERM (`docker stop`). It needs Docker, so it runs in
+`make it`, not in `make verify`; each side keeps its fast tests against a fake of the other one.

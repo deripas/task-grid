@@ -1,0 +1,6 @@
+bin/
+*.md
+*.yml
+tools.mod
+tools.sum
+Makefile

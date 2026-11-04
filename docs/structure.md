@@ -47,3 +47,5 @@ crawler-example/*  ->  starters/*  ->  libs/* (engines, transports)  ->  task-gr
 - Every module with more than one package has an `ArchitectureTest` (ArchUnit) run by `make verify`;
   `handler-sidecar` - `arch-go.yml`, run by `make verify` as well.
 - Go module path - `github.com/deripas/task-grid/<dir>`; generated code from shared proto files is committed.
+- Integration tests are `*IT` classes run by failsafe in the Maven profile `it` (`make it`, needs Docker);
+  `make verify` runs only unit tests and architecture rules.
