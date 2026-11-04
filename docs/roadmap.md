@@ -7,8 +7,8 @@ Agreed decisions - [decisions.md](decisions.md), layout - [structure.md](structu
 1. `[x]` **Name and structure.** Coordinates, own root parent, module layout, `Makefile`.
 2. `[x]` **Concepts and vocabulary.** Task / attempt, kind, affinity key, worker / handler, statuses, blob; core packages;
    in-process vs remote handler. Result - [concepts.md](concepts.md).
-3. `[~]` **task-grid-core: contracts.** Domain types and ports, `ArchitectureTest`.
-4. `[ ]` **task-grid-core: in-memory MVP.** Queue per affinity key, result store, in-process worker and handler;
+3. `[x]` **task-grid-core: contracts.** Domain types and ports, `ArchitectureTest`.
+4. `[~]` **task-grid-core: in-memory MVP.** Queue per affinity key, result store, in-process worker and handler;
    one JVM runs the whole flow.
 5. `[ ]` **Remote worker.** `Worker` for handlers behind handler-sidecar: protocol, credits, affinity.
 6. `[ ]` **handler-sidecar (Go).** Move from the prototype; `make check` covers Go too.

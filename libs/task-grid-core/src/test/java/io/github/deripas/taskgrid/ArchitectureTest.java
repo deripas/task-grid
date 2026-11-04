@@ -12,13 +12,15 @@ import static com.tngtech.archunit.library.dependencies.SlicesRuleDefinition.sli
 /**
  * Architecture rules of task-grid-core, checked by the regular build ({@code make verify}).
  * <pre>
- *   queue   TaskQueue: keeps tasks per affinity key, assigns attempts to the worker, puts final results
+ *   queue.memory   result.memory   worker.local     implementations: see only ports, nobody sees them
+ *         ↓               ↓              ↓          (queue.memory: Partition state machine; worker.local: Handler)
+ *   queue          TaskQueue, QueueSettings
  *         ↓                    ↓
- *   worker  Worker, AttemptCallback     result  ResultStore
+ *   worker         Worker, AttemptCallback       result   ResultStore
  *         ↓                    ↓
- *   task    Task, Attempt, statuses, results, Blob - pure types
+ *   task           Task, Attempt, statuses, results, Blob - pure types
  * </pre>
- * worker and result do not know each other. The whole module depends on the JDK only.
+ * worker and result do not know each other. Implementations are wired together by the application (or a test).
  * A rule gets in the way - change it here explicitly, with a reason next to it; do not work around it.
  */
 @AnalyzeClasses(packages = "io.github.deripas.taskgrid", importOptions = ImportOption.DoNotIncludeTests.class)
@@ -29,22 +31,31 @@ class ArchitectureTest {
     static final ArchRule LAYERS = layeredArchitecture()
         .consideringOnlyDependenciesInLayers()
         .ensureAllClassesAreContainedInArchitecture()
-        .layer("task").definedBy(BASE + ".task..")
-        .layer("worker").definedBy(BASE + ".worker..")
-        .layer("result").definedBy(BASE + ".result..")
-        .layer("queue").definedBy(BASE + ".queue..")
-        .whereLayer("queue").mayNotBeAccessedByAnyLayer()
-        .whereLayer("worker").mayOnlyBeAccessedByLayers("queue")
-        .whereLayer("result").mayOnlyBeAccessedByLayers("queue")
-        .whereLayer("task").mayOnlyBeAccessedByLayers("queue", "worker", "result");
+        .layer("task").definedBy(BASE + ".task")
+        .layer("worker").definedBy(BASE + ".worker")
+        .layer("result").definedBy(BASE + ".result")
+        .layer("queue").definedBy(BASE + ".queue")
+        .layer("worker.local").definedBy(BASE + ".worker.local..")
+        .layer("result.memory").definedBy(BASE + ".result.memory..")
+        .layer("queue.memory").definedBy(BASE + ".queue.memory..")
+        .whereLayer("queue.memory").mayNotBeAccessedByAnyLayer()
+        .whereLayer("result.memory").mayNotBeAccessedByAnyLayer()
+        .whereLayer("worker.local").mayNotBeAccessedByAnyLayer()
+        .whereLayer("queue").mayOnlyBeAccessedByLayers("queue.memory")
+        .whereLayer("result").mayOnlyBeAccessedByLayers("queue", "queue.memory", "result.memory")
+        .whereLayer("worker").mayOnlyBeAccessedByLayers("queue", "queue.memory", "worker.local")
+        .whereLayer("task").mayOnlyBeAccessedByLayers(
+            "queue", "worker", "result", "queue.memory", "result.memory", "worker.local");
 
     /**
-     * Core is reusable in any environment: no frameworks, no libraries.
+     * Core is reusable in any environment: the JDK plus a short, explicit list of libraries.
+     * slf4j-api - logging facade (lombok @Slf4j); lombok - compile-time only.
+     * A new library goes here deliberately, with its reason.
      */
     @ArchTest
-    static final ArchRule JDK_ONLY = classes()
-        .should().onlyDependOnClassesThat().resideInAnyPackage("java..", BASE + "..");
+    static final ArchRule MINIMAL_DEPENDENCIES = classes()
+        .should().onlyDependOnClassesThat().resideInAnyPackage("java..", "org.slf4j..", "lombok..", BASE + "..");
 
     @ArchTest
-    static final ArchRule NO_CYCLES = slices().matching(BASE + ".(*)..").should().beFreeOfCycles();
+    static final ArchRule NO_CYCLES = slices().matching(BASE + ".(**)").should().beFreeOfCycles();
 }

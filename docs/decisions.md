@@ -69,3 +69,20 @@ meta keys declared as constants by the component that owns them, with typed acce
 New properties add a key, not a field. The whole task meta is passed to the handler and copied into `TaskResult`:
 correlation data of the client (e.g. RabbitMQ `reply_to`, `correlation_id`) comes back with the result on any node.
 Values that drive core logic stay typed fields: attempt number, statuses, error.
+
+## D11. Minimal dependencies, not JDK only
+
+Every component may use Lombok and `slf4j-api` (`@Slf4j`). Other libraries are added when needed, the minimum
+necessary; for core the allowed list is the dependency rule in its `ArchitectureTest`, changed deliberately.
+
+## D12. Where implementations live
+
+Implementations useful beyond tests (in-memory queue and store, in-process worker - single-node mode, first steps of
+url-manager) live in main code. Code needed only by tests (assembling a node, fakes) lives in tests.
+
+## D13. Retry is opt-in; resubmission is recognized by payload hash
+
+A handler failure is final unless the handler says otherwise: `RetryableException` means `RETRY`, any other exception
+`FAILED`. Unknown failures are not retried blindly. `Blob` carries the SHA-256 of its content. A task submitted again
+with an id that is still in the queue is the same task if the payload hash matches (a client retry - accepted, not
+queued twice) and an error otherwise (the id is taken by another request).

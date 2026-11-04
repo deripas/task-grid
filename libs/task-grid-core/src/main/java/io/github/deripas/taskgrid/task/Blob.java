@@ -1,6 +1,9 @@
 package io.github.deripas.taskgrid.task;
 
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.Objects;
 
 /**
@@ -20,6 +23,18 @@ public sealed interface Blob {
         @Override
         public long size() {
             return bytes.length;
+        }
+
+        /**
+         * Computed on each call, not cached.
+         */
+        @Override
+        public String hash() {
+            try {
+                return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+            } catch (NoSuchAlgorithmException e) {
+                throw new IllegalStateException("SHA-256 is required of every JDK", e);
+            }
         }
 
         @Override
@@ -42,10 +57,16 @@ public sealed interface Blob {
      * Content in blob storage.
      *
      * @param location storage-specific address of the object, e.g. a key in a bucket or a SeaweedFS fid
+     * @param hash     SHA-256 of the content, as computed when it was stored
      */
-    record Ref(String location, long size) implements Blob {
+    record Ref(
+        String location,
+        long size,
+        String hash
+    ) implements Blob {
         public Ref {
             Objects.requireNonNull(location, "location");
+            Objects.requireNonNull(hash, "hash");
         }
     }
 
@@ -53,6 +74,11 @@ public sealed interface Blob {
      * Size of the content in bytes.
      */
     long size();
+
+    /**
+     * SHA-256 of the content, lowercase hex: tells whether two blobs carry the same content.
+     */
+    String hash();
 
     static Blob of(byte[] bytes) {
         return new Inline(bytes);

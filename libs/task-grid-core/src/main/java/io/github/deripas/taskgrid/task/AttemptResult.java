@@ -20,4 +20,16 @@ public record AttemptResult(
         Objects.requireNonNull(taskId, "taskId");
         Objects.requireNonNull(status, "status");
     }
+
+    public static AttemptResult done(Attempt attempt, Blob body) {
+        return new AttemptResult(attempt.task().id(), attempt.number(), AttemptStatus.DONE, Objects.requireNonNull(body, "body"), null);
+    }
+
+    public static AttemptResult failed(Attempt attempt, String error) {
+        return new AttemptResult(attempt.task().id(), attempt.number(), AttemptStatus.FAILED, null, error);
+    }
+
+    public static AttemptResult retry(Attempt attempt, String error) {
+        return new AttemptResult(attempt.task().id(), attempt.number(), AttemptStatus.RETRY, null, error);
+    }
 }

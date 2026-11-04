@@ -35,7 +35,7 @@ A future would not survive a cluster: the result may arrive at another node than
 | **Attempt status** | How an attempt ended. `DONE` - there is a result; domain errors (HTTP 404) are `DONE` too, they are content. `FAILED` - final, no retry. `RETRY` - technical failure, the attempt counts. Later statuses come with their mechanisms: `RATE_LIMITED` with pauses per key, `RELEASED` with drain. |
 | **Task status** | Final status for the client: `DONE` or `FAILED` (final failure or attempts exhausted). |
 | **Task result** | Final result of a task: status, body or error, meta of the task plus keys added on the way (`attempts`). |
-| **Blob** | Bytes of a payload or result: inline (in heap) or a reference to blob storage. The domain type does no I/O; reading a reference is the job of an adapter. |
+| **Blob** | Bytes of a payload or result: inline (in heap) or a reference to blob storage; size and SHA-256 hash of the content. The domain type does no I/O; reading a reference is the job of an adapter. |
 
 ## Meta
 
@@ -49,8 +49,12 @@ A future would not survive a cluster: the result may arrive at another node than
 | Package | Contents |
 |---|---|
 | `task` | Task, Attempt, statuses, results, Blob - pure types |
-| `queue` | `TaskQueue` port, in-memory queue |
-| `result` | `ResultStore` port, in-memory store |
-| `worker` | `Worker`, `AttemptCallback`, `Handler`, in-process worker |
+| `queue` | `TaskQueue` port, `QueueSettings` |
+| `result` | `ResultStore` port |
+| `worker` | `Worker`, `AttemptCallback` |
+| `queue.memory` | `MemoryTaskQueue` - single-node queue; `Partition` - pure state machine of the tasks of one affinity key |
+| `result.memory` | `MemoryResultStore` - single-node store with TTL |
+| `worker.local` | `LocalWorker` - runs in-process handlers on an executor; `Handler`, `RetryableException` |
 
-Allowed dependencies are checked by `ArchitectureTest` of the module.
+Implementations see only ports of other packages. `Partition` moves to a shared place when a second engine
+(Pekko) needs it. Allowed dependencies are checked by `ArchitectureTest` of the module.
