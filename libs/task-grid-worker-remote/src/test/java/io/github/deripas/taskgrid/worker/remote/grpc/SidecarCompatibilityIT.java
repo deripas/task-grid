@@ -1,5 +1,6 @@
 package io.github.deripas.taskgrid.worker.remote.grpc;
 
+import com.github.luben.zstd.Zstd;
 import io.github.deripas.taskgrid.queue.QueueSettings;
 import io.github.deripas.taskgrid.queue.TaskQueue;
 import io.github.deripas.taskgrid.queue.memory.MemoryTaskQueue;
@@ -15,15 +16,22 @@ import io.github.deripas.taskgrid.worker.remote.RemoteWorker;
 import io.grpc.Grpc;
 import io.grpc.InsecureServerCredentials;
 import io.grpc.Server;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.Testcontainers;
 import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.Network;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.images.builder.ImageFromDockerfile;
 
 import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -39,14 +47,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Compatibility of the two sides of remote.proto: a node of this JVM (queue, RemoteWorker, NodeService over TCP)
- * and the real handler-sidecar image, built from handler-sidecar/Dockerfile, in front of a test handler of this JVM.
- * Needs Docker; run by {@code make it}.
+ * and the real handler-sidecar image, built from handler-sidecar/Dockerfile, in front of a test handler of this JVM;
+ * answers above the inline limit go to SeaweedFS over S3. Needs Docker; run by {@code make it}.
  */
 class SidecarCompatibilityIT {
     private static final Duration WAIT = Duration.ofSeconds(30);
     private static final int CAPACITY = 4;
+    private static final int INLINE_MAX = 64 << 10;
+    private static final int S3_PORT = 8333;
+    private static final String BUCKET = "results";
     private static final ImageFromDockerfile IMAGE = new ImageFromDockerfile("task-grid/handler-sidecar-it", false)
         .withDockerfile(Path.of(System.getProperty("handler-sidecar.dir", "../../handler-sidecar"), "Dockerfile"));
+
+    private static final HttpClient HTTP = HttpClient.newHttpClient();
+    private static Network network;
+    private static GenericContainer<?> storage;
 
     private final ResultStore results = new MemoryResultStore(Duration.ofMinutes(1), Clock.systemUTC());
     private RemoteWorker worker;
@@ -55,8 +70,28 @@ class SidecarCompatibilityIT {
     private TestHandler handler;
     private GenericContainer<?> sidecar;
 
+    @BeforeAll
+    static void startStorage() throws InterruptedException {
+        network = Network.newNetwork();
+        storage = new GenericContainer<>("chrislusf/seaweedfs:4.48")
+            .withCommand("server", "-s3", "-dir=/data", "-master.volumeSizeLimitMB=64", "-volume.max=0")
+            .withNetwork(network)
+            .withNetworkAliases("seaweedfs")
+            .withExposedPorts(S3_PORT)
+            .waitingFor(Wait.forListeningPorts(S3_PORT).withStartupTimeout(WAIT));
+        storage.start();
+        createBucket();
+    }
+
+    @AfterAll
+    static void stopStorage() {
+        storage.stop();
+        network.close();
+    }
+
     @BeforeEach
     void start() throws IOException {
+
         queue = new MemoryTaskQueue(new QueueSettings(3), results, callback -> {
             worker = new RemoteWorker(RemoteSettings.DEFAULTS, callback, Clock.systemUTC());
             return worker;
@@ -68,6 +103,7 @@ class SidecarCompatibilityIT {
         handler = new TestHandler();
         Testcontainers.exposeHostPorts(node.getPort(), handler.port());
         sidecar = new GenericContainer<>(IMAGE)
+            .withNetwork(network)
             .withEnv(Map.of(
                 "NODE_ADDRESS", "host.testcontainers.internal:" + node.getPort(),
                 "HANDLER_TARGET", "host.testcontainers.internal:" + handler.port(),
@@ -75,7 +111,10 @@ class SidecarCompatibilityIT {
                 "WORKER_ID", "sidecar-it",
                 "KIND", "echo",
                 "CAPACITY", String.valueOf(CAPACITY),
-                "DRAIN_TIMEOUT", "20s"))
+                "DRAIN_TIMEOUT", "20s",
+                "INLINE_MAX", String.valueOf(INLINE_MAX),
+                "BLOB_S3_ENDPOINT", "seaweedfs:" + S3_PORT,
+                "BLOB_PREFIX", "it/"))
             .waitingFor(Wait.forLogMessage(".*session open.*", 1).withStartupTimeout(WAIT));
         sidecar.start();
     }
@@ -112,6 +151,30 @@ class SidecarCompatibilityIT {
         }
         assertEquals(40, handler.calls());
         assertTrue(handler.peak() <= CAPACITY, "peak " + handler.peak() + " above capacity " + CAPACITY);
+    }
+
+    /**
+     * 8 MiB - above the inbound limit of the node (4 MiB) too: only the reference goes through Complete.
+     */
+    @Test
+    void largeAnswerGoesToBlobStorage() throws IOException, InterruptedException {
+        final String command = "big:" + (8 << 20);
+        submit("task-big", command, Map.of(Worker.KIND, "echo"));
+
+        final TaskResult result = await("task-big");
+        assertEquals(TaskStatus.DONE, result.status(), result.error());
+        final Blob.Ref ref = (Blob.Ref) result.body();
+        assertEquals("zstd", ref.encoding());
+        assertTrue(ref.location().startsWith("s3://" + BUCKET + "/it/task-big/"), ref.location());
+
+        final byte[] stored = read(ref.location());
+        assertTrue(stored.length < ref.size() / 4, "stored " + stored.length + " of " + ref.size());
+        final byte[] answer = Zstd.decompress(stored, Math.toIntExact(ref.size()));
+        assertEquals(ref.size(), answer.length);
+        assertEquals(ref.hash(), Blob.of(answer).hash());
+        final String text = new String(answer, StandardCharsets.UTF_8);
+        assertTrue(text.startsWith(command + "\n" + TestHandler.text(8 << 20)), "answer of " + text.length());
+        assertTrue(text.endsWith("x-task-id=task-big"), text.substring(text.length() - 100));
     }
 
     @Test
@@ -153,6 +216,49 @@ class SidecarCompatibilityIT {
         Map<String, String> meta
     ) {
         queue.submit(new Task(id, Blob.of(command.getBytes(StandardCharsets.UTF_8)), meta)).toCompletableFuture().join();
+    }
+
+    /**
+     * The bucket of the sidecar, repeated until the storage takes a write: the port is open before the S3 gateway
+     * answers, and its volumes start later still.
+     */
+    private static void createBucket() throws InterruptedException {
+        final HttpRequest bucket = HttpRequest.newBuilder(s3("/" + BUCKET)).PUT(HttpRequest.BodyPublishers.noBody()).build();
+        final HttpRequest probe = HttpRequest.newBuilder(s3("/" + BUCKET + "/probe"))
+            .PUT(HttpRequest.BodyPublishers.ofString("probe"))
+            .build();
+        final long deadline = System.nanoTime() + WAIT.toNanos();
+        while (send(bucket) >= 500 || send(probe) != 200) {
+            if (System.nanoTime() > deadline) {
+                throw new IllegalStateException("SeaweedFS takes no writes: " + storage.getLogs());
+            }
+            Thread.sleep(200);
+        }
+    }
+
+    /**
+     * Object of a location s3://bucket/key, read anonymously.
+     */
+    private static byte[] read(String location) throws IOException, InterruptedException {
+        final HttpRequest get = HttpRequest.newBuilder(s3("/" + location.substring("s3://".length()))).GET().build();
+        final HttpResponse<byte[]> response = HTTP.send(get, HttpResponse.BodyHandlers.ofByteArray());
+        assertEquals(200, response.statusCode(), location);
+        return response.body();
+    }
+
+    /**
+     * Status of the answer; no answer at all - 503.
+     */
+    private static int send(HttpRequest request) throws InterruptedException {
+        try {
+            return HTTP.send(request, HttpResponse.BodyHandlers.discarding()).statusCode();
+        } catch (IOException e) {
+            return 503;
+        }
+    }
+
+    private static URI s3(String path) {
+        return URI.create("http://" + storage.getHost() + ":" + storage.getMappedPort(S3_PORT) + path);
     }
 
     private TaskResult await(String id) {

@@ -19,13 +19,17 @@ import (
 	"google.golang.org/grpc/status"
 
 	remotev1 "github.com/deripas/task-grid/handler-sidecar/internal/gen/remote/v1"
+	"github.com/deripas/task-grid/handler-sidecar/internal/domain"
 	"github.com/deripas/task-grid/handler-sidecar/internal/handler"
 	"github.com/deripas/task-grid/handler-sidecar/internal/handler/handlertest"
 	"github.com/deripas/task-grid/handler-sidecar/internal/node"
 	"github.com/deripas/task-grid/handler-sidecar/internal/sidecar"
 )
 
-const wait = 5 * time.Second
+const (
+	wait      = 5 * time.Second
+	inlineMax = 1 << 10
+)
 
 // fakeNode behaves like the real node: keeps the attempts of the session in a queue, tells its demand and sends
 // attempts only within credit; after the half-close of the sidecar sends nothing and closes the stream once
@@ -190,6 +194,24 @@ func (n *fakeNode) result(t *testing.T) *remotev1.CompleteRequest {
 	}
 }
 
+// fakeBlobs - blob storage in memory; fail - Put answers an error.
+type fakeBlobs struct {
+	mu   sync.Mutex
+	puts map[string][]byte // location -> answer
+	fail atomic.Bool
+}
+
+func (b *fakeBlobs) Put(_ context.Context, taskID string, data []byte) (domain.BlobRef, error) {
+	if b.fail.Load() {
+		return domain.BlobRef{}, errors.New("storage is down")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	location := fmt.Sprint("mem://", taskID, "/", len(b.puts))
+	b.puts[location] = data
+	return domain.BlobRef{Location: location, Size: int64(len(data)), Sha256: "sha"}, nil
+}
+
 type harness struct {
 	node    *fakeNode
 	handler *handlertest.Handler
@@ -198,6 +220,18 @@ type harness struct {
 }
 
 func start(t *testing.T, n *fakeNode, capacity int, drainTimeout time.Duration) *harness {
+	t.Helper()
+	return startWith(t, n, capacity, drainTimeout, nil)
+}
+
+// startWith - with blob storage; blobs nil - none.
+func startWith(
+	t *testing.T,
+	n *fakeNode,
+	capacity int,
+	drainTimeout time.Duration,
+	blobs *fakeBlobs,
+) *harness {
 	t.Helper()
 	h, addr := handlertest.Serve(t)
 	hc, err := handler.New(handler.Config{Target: addr, Method: handlertest.Method, Timeout: 10 * time.Second, MaxResponse: 1 << 20})
@@ -214,9 +248,10 @@ func start(t *testing.T, n *fakeNode, capacity int, drainTimeout time.Duration) 
 		WorkerID:      "worker-1",
 		Kind:          "echo",
 		Capacity:      capacity,
+		InlineMax:     inlineMax,
 		RetryInterval: 20 * time.Millisecond,
 		DrainTimeout:  drainTimeout,
-	}, nc, hc, slog.New(slog.DiscardHandler))
+	}, nc, hc, port(blobs), slog.New(slog.DiscardHandler))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- s.Run(ctx) }()
@@ -225,6 +260,14 @@ func start(t *testing.T, n *fakeNode, capacity int, drainTimeout time.Duration) 
 		s.Close()
 	})
 	return &harness{node: n, handler: h, done: done, cancel: cancel}
+}
+
+// port - nil *fakeBlobs as a nil interface: no storage.
+func port(b *fakeBlobs) sidecar.Blobs {
+	if b == nil {
+		return nil
+	}
+	return b
 }
 
 // stop drains the sidecar and returns the result of Run.
@@ -264,7 +307,7 @@ func TestAttemptsAreExecutedWithinCapacity(t *testing.T) {
 		if r.Status != remotev1.Status_DONE || r.WorkerId != "worker-1" || r.Attempt != 1 {
 			t.Fatalf("result %v", r)
 		}
-		reply := handlertest.Decode(t, r.Body)
+		reply := handlertest.Decode(t, r.GetBody())
 		if want := "d" + r.TaskId[1:]; reply.Data != want {
 			t.Fatalf("data %q, want %q", reply.Data, want)
 		}
@@ -285,7 +328,7 @@ func TestHandlerFailureIsReported(t *testing.T) {
 	start(t, n, 1, wait)
 	n.push(attempt(t, "t1", handlertest.Call{StatusCode: int32(codes.InvalidArgument)}))
 	r := n.result(t)
-	if r.Status != remotev1.Status_FAILED || r.Error == "" || len(r.Body) > 0 {
+	if r.Status != remotev1.Status_FAILED || r.Error == "" || len(r.GetBody()) > 0 {
 		t.Fatalf("result %v", r)
 	}
 }
@@ -397,5 +440,54 @@ func TestReconnectsAfterNodeClosesSession(t *testing.T) {
 		case <-time.After(wait):
 			t.Fatalf("no hello %d", i+1)
 		}
+	}
+}
+
+func TestAnswerUpToInlineMaxIsInline(t *testing.T) {
+	n := startNode(t)
+	blobs := &fakeBlobs{puts: map[string][]byte{}}
+	startWith(t, n, 1, wait, blobs)
+	n.push(attempt(t, "t1", handlertest.Call{PadBytes: inlineMax / 2}))
+	r := n.result(t)
+	if r.Status != remotev1.Status_DONE || r.GetBlob() != nil || len(r.GetBody()) == 0 || len(blobs.puts) != 0 {
+		t.Fatalf("result %v, %d puts", r, len(blobs.puts))
+	}
+}
+
+func TestAnswerAboveInlineMaxGoesToBlobStorage(t *testing.T) {
+	n := startNode(t)
+	blobs := &fakeBlobs{puts: map[string][]byte{}}
+	startWith(t, n, 1, wait, blobs)
+	n.push(attempt(t, "t1", handlertest.Call{Data: "big", PadBytes: 2 * inlineMax}))
+	r := n.result(t)
+	ref := r.GetBlob()
+	if r.Status != remotev1.Status_DONE || ref == nil || len(r.GetBody()) != 0 {
+		t.Fatalf("result %v", r)
+	}
+	stored := blobs.puts[ref.Location]
+	if ref.Size != int64(len(stored)) || ref.Sha256 != "sha" || handlertest.Decode(t, stored).Data != "big" {
+		t.Fatalf("ref %v, stored %d bytes", ref, len(stored))
+	}
+}
+
+func TestAnswerAboveInlineMaxWithoutStorageFails(t *testing.T) {
+	n := startNode(t)
+	start(t, n, 1, wait)
+	n.push(attempt(t, "t1", handlertest.Call{PadBytes: 2 * inlineMax}))
+	r := n.result(t)
+	if r.Status != remotev1.Status_FAILED || r.GetBlob() != nil || len(r.GetBody()) != 0 || r.Error == "" {
+		t.Fatalf("result %v", r)
+	}
+}
+
+func TestBlobStorageFailureIsRetried(t *testing.T) {
+	n := startNode(t)
+	blobs := &fakeBlobs{puts: map[string][]byte{}}
+	blobs.fail.Store(true)
+	startWith(t, n, 1, wait, blobs)
+	n.push(attempt(t, "t1", handlertest.Call{PadBytes: 2 * inlineMax}))
+	r := n.result(t)
+	if r.Status != remotev1.Status_RETRY || r.Error == "" {
+		t.Fatalf("result %v", r)
 	}
 }

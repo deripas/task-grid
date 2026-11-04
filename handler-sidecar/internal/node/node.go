@@ -55,14 +55,24 @@ func (c *Client) Open(ctx context.Context, h sidecar.Hello) (sidecar.Session, er
 
 // Complete sends the result of an attempt; INVALID_ARGUMENT - sidecar.ErrRejected.
 func (c *Client) Complete(ctx context.Context, workerID string, comp domain.Completion) error {
-	_, err := c.stub.Complete(ctx, &remotev1.CompleteRequest{
+	req := &remotev1.CompleteRequest{
 		WorkerId: workerID,
 		TaskId:   comp.TaskID,
 		Attempt:  int32(comp.Attempt),
 		Status:   toProto(comp.Status),
-		Body:     comp.Body,
 		Error:    comp.Error,
-	})
+	}
+	if b := comp.Blob; b != nil {
+		req.Result = &remotev1.CompleteRequest_Blob{Blob: &remotev1.BlobRef{
+			Location: b.Location,
+			Size:     b.Size,
+			Sha256:   b.Sha256,
+			Encoding: b.Encoding,
+		}}
+	} else if comp.Body != nil {
+		req.Result = &remotev1.CompleteRequest_Body{Body: comp.Body}
+	}
+	_, err := c.stub.Complete(ctx, req)
 	if status.Code(err) == codes.InvalidArgument {
 		return fmt.Errorf("%w: %v", sidecar.ErrRejected, err)
 	}

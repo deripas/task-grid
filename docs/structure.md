@@ -11,11 +11,11 @@ Makefile                   build entry points: make verify, make test, ...
 libs/                      reusable task-grid libraries, no Spring
   task-grid-core/          domain: types, contracts (ports), in-memory implementations; JDK only
   task-grid-worker-remote/ Worker for handlers behind handler-sidecar: remote.proto (shared with Go), credits, gRPC
-handler-sidecar/           Go process next to a remote handler: session with the node, credit, results, drain
+handler-sidecar/           Go process next to a remote handler: session with the node, credit, results (large ones to S3), drain
 starters/                  Spring Boot starters over libs/ (not necessarily one per library)
 crawler-example/           crawler built on task-grid; imports the Spring Boot BOM
-  fetcher-api/             fetcher.proto - worker protocol shared by fetcher and url-manager
-  fetcher/                 worker: gRPC server over Apache HttpClient, runs behind the sidecar
+  fetcher-api/             fetcher.proto - handler protocol shared by fetcher and url-manager
+  fetcher/                 handler: plain Java gRPC server over Apache HttpClient, runs behind handler-sidecar
   url-manager/             Spring Boot application: client protocol (REST, RabbitMQ), queue, dispatcher
 docs/                      project documents
 .local/                    working notes and scratch files, not in git
@@ -40,6 +40,8 @@ crawler-example/*  ->  starters/*  ->  libs/* (engines, transports)  ->  task-gr
 - `task-grid-worker-remote` adds gRPC API and protobuf; the transport (netty, ...) is chosen by the application.
 - Libraries never depend on Spring; starters never depend on example applications.
 - `fetcher` and `url-manager` share only `fetcher-api`; neither depends on the other.
+- `crawler-example` imports the gRPC BOM before the Spring Boot BOM: versions of task-grid win (generated stubs
+  need the gRPC runtime of their plugin).
 
 ## Conventions
 

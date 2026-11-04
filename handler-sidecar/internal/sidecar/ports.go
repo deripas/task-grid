@@ -53,3 +53,9 @@ type Demand struct {
 type Handler interface {
 	Call(ctx context.Context, a domain.Attempt) domain.Result
 }
+
+// Blobs - port to blob storage for answers above the inline limit. Implementation - internal/blob.
+type Blobs interface {
+	// Put stores the answer of an attempt of the task under a new key and returns the reference to it.
+	Put(ctx context.Context, taskID string, data []byte) (domain.BlobRef, error)
+}

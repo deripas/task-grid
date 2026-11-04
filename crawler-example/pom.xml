@@ -11,8 +11,8 @@
 
     <!--
         Crawler built on task-grid: an example application, not a library.
-          fetcher-api  fetcher.proto - the worker protocol shared by fetcher and url-manager
-          fetcher      worker: gRPC server over Apache HttpClient, runs behind the sidecar
+          fetcher-api  fetcher.proto - the handler protocol shared by fetcher and url-manager
+          fetcher      handler: gRPC server over Apache HttpClient, runs behind handler-sidecar
           url-manager  Spring Boot application: client protocol (REST, RabbitMQ), task queue, dispatcher
     -->
     <artifactId>crawler-example</artifactId>
@@ -24,6 +24,10 @@
         <module>url-manager</module>
     </modules>
 
+    <properties>
+        <wiremock.version>3.13.2</wiremock.version>
+    </properties>
+
     <dependencyManagement>
         <dependencies>
             <dependency>
@@ -31,12 +35,28 @@
                 <artifactId>fetcher-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <!--
+                Versions of task-grid win over the Spring Boot BOM: the first import of an artifact wins, and gRPC
+                stubs are generated with the plugin of ${grpc.version}. protobuf-java is managed directly in the root.
+            -->
+            <dependency>
+                <groupId>io.grpc</groupId>
+                <artifactId>grpc-bom</artifactId>
+                <version>${grpc.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
             <dependency>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-dependencies</artifactId>
                 <version>${spring-boot.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.wiremock</groupId>
+                <artifactId>wiremock-standalone</artifactId>
+                <version>${wiremock.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

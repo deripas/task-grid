@@ -112,7 +112,8 @@ queued twice) and an error otherwise (the id is taken by another request).
   come with the cluster engine; the credit ledger already distributes slots among several sessions.
 - The handler gets the whole task meta as `x-meta-<key>` metadata. Handler statuses map to `DONE` / `FAILED` / `RETRY`
   only; `RESOURCE_EXHAUSTED` and `ABORTED` are `RETRY` until `RATE_LIMITED` / `RELEASED` exist.
-- Results above `MAX_RESULT` (4 MiB, the inbound limit of the Java gRPC server) fail until blob storage exists.
+- Results above `MAX_RESULT` (4 MiB, the inbound limit of the Java gRPC server) fail until blob storage exists
+  (superseded by D19).
 - Go module `github.com/deripas/task-grid/handler-sidecar`; code from `remote.proto` is generated with `protoc` and plugins
   from `tools.mod` and committed, so a plain `go build` needs no protoc.
 
@@ -122,3 +123,43 @@ queued twice) and an error otherwise (the id is taken by another request).
 a node and a test handler of the test JVM; the container reaches them through `Testcontainers.exposeHostPorts`.
 It checks the artifact that is deployed, including drain on SIGTERM (`docker stop`). It needs Docker, so it runs in
 `make it`, not in `make verify`; each side keeps its fast tests against a fake of the other one.
+
+## D17. Fetcher: unary, failures as gRPC statuses, no Spring
+
+- `crawler.fetcher.v1.Fetcher/Fetch` is unary (the sidecar convention): `url` -> `status`, `headers`, `body`. Fields are
+  added when the crawler needs them (final URL, user agent, proxy, ...).
+- Every response of the site, 404 and 500 included, is a result (`OK` -> `DONE`). Not an absolute http(s) URL -
+  `INVALID_ARGUMENT`; the site cannot be reached (DNS, connect, TLS, timeout, broken response, redirect loop) -
+  `FAILED_PRECONDITION`; body above `MAX_BODY` - `OUT_OF_RANGE`: all final, no retry. Only a failure of the fetcher
+  itself is `INTERNAL` -> `RETRY`.
+- `MAX_BODY` is 100 MiB (a sitemap.xml): above the 4 MiB result limit of the sidecar until large results go to blob
+  storage (roadmap step 9).
+- A plain Java process (gRPC server on virtual threads, Apache HttpClient 5 classic, no retries, no cookies), without
+  Spring: a handler behind the sidecar is meant to be small and quick to start.
+
+## D18. Stop order instead of a stop command for handlers
+
+In a pod both containers get SIGTERM at once, but the handler must outlive the drain of its sidecar. The order is
+set by the deployment, not by the protocol: in Kubernetes 1.29+ the handler is a native sidecar (init container with
+`restartPolicy: Always`) and handler-sidecar the main container, so the handler starts first and stops last; in
+docker-compose the sidecar `depends_on` the handler. A handler only has to shut down gracefully on SIGTERM - no
+`close` command, which would be one more contract for every handler. Timeouts: `HANDLER_TIMEOUT < DRAIN_TIMEOUT <=`
+shutdown timeout of the handler, `DRAIN_TIMEOUT` + margin `< terminationGracePeriodSeconds`. Details -
+[handler-sidecar/README.md](../handler-sidecar/README.md#deployment-and-stop-order).
+
+## D19. Large results: the sidecar puts them into S3, the node gets a reference
+
+- Two limits of the sidecar: `MAX_RESPONSE` (100 MiB) - what it takes from the handler, above it `FAILED`;
+  `INLINE_MAX` (512 KiB, at most 4 MiB - the inbound limit of the node) - above it the answer goes to blob storage and
+  `Complete` carries `BlobRef{location, size, sha256, encoding}` instead of the body (`oneof result`). Replaces
+  `MAX_RESULT` of D15. The node maps it to `Blob.Ref`; the core does not read it, an adapter of the application does.
+- Storage - any S3 (minio-go): SeaweedFS in the tests, as in the prototype. The object is compressed with zstd
+  (always: results are mostly text); size and sha256 are of the answer before compression, so a reader checks what
+  it has decoded. `location` is `s3://<bucket>/<key>`: a reader needs only the endpoint and credentials.
+- Key `<BLOB_PREFIX><task id>/<random>`: attempts do not overwrite each other, a repeat of `Complete` carries the same
+  reference. The prefix is a setting of the sidecar; objects are deleted by a lifecycle rule (TTL) of the bucket on
+  that prefix, set up with the bucket - not by the sidecar. A prefix per task from the node (different TTL per
+  client) - when needed.
+- The put happens within the slot of the attempt: memory of the sidecar stays bounded by `CAPACITY` answers.
+  No storage configured and an answer above `INLINE_MAX` - `FAILED` (configuration does not change between attempts);
+  the storage fails - `RETRY`.

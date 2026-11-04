@@ -76,6 +76,12 @@
             <artifactId>testcontainers</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- reads the objects the sidecar puts into blob storage (SidecarCompatibilityIT) -->
+        <dependency>
+            <groupId>com.github.luben</groupId>
+            <artifactId>zstd-jni</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

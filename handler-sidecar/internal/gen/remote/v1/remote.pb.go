@@ -495,13 +495,20 @@ func (x *Attempt) GetPayload() []byte {
 }
 
 type CompleteRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	WorkerId      string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
-	TaskId        string                 `protobuf:"bytes,2,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	Attempt       int32                  `protobuf:"varint,3,opt,name=attempt,proto3" json:"attempt,omitempty"` // Attempt.number
-	Status        Status                 `protobuf:"varint,4,opt,name=status,proto3,enum=taskgrid.worker.remote.v1.Status" json:"status,omitempty"`
-	Body          []byte                 `protobuf:"bytes,5,opt,name=body,proto3" json:"body,omitempty"`   // DONE: output of the handler as is
-	Error         string                 `protobuf:"bytes,6,opt,name=error,proto3" json:"error,omitempty"` // not DONE: description of the failure
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	TaskId   string                 `protobuf:"bytes,2,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	Attempt  int32                  `protobuf:"varint,3,opt,name=attempt,proto3" json:"attempt,omitempty"` // Attempt.number
+	Status   Status                 `protobuf:"varint,4,opt,name=status,proto3,enum=taskgrid.worker.remote.v1.Status" json:"status,omitempty"`
+	// DONE: output of the handler - inline, or, above the inline limit of the sidecar, a reference to the object
+	// the sidecar has put into blob storage
+	//
+	// Types that are valid to be assigned to Result:
+	//
+	//	*CompleteRequest_Body
+	//	*CompleteRequest_Blob
+	Result        isCompleteRequest_Result `protobuf_oneof:"result"`
+	Error         string                   `protobuf:"bytes,6,opt,name=error,proto3" json:"error,omitempty"` // not DONE: description of the failure
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -564,9 +571,27 @@ func (x *CompleteRequest) GetStatus() Status {
 	return Status_STATUS_UNSPECIFIED
 }
 
+func (x *CompleteRequest) GetResult() isCompleteRequest_Result {
+	if x != nil {
+		return x.Result
+	}
+	return nil
+}
+
 func (x *CompleteRequest) GetBody() []byte {
 	if x != nil {
-		return x.Body
+		if x, ok := x.Result.(*CompleteRequest_Body); ok {
+			return x.Body
+		}
+	}
+	return nil
+}
+
+func (x *CompleteRequest) GetBlob() *BlobRef {
+	if x != nil {
+		if x, ok := x.Result.(*CompleteRequest_Blob); ok {
+			return x.Blob
+		}
 	}
 	return nil
 }
@@ -574,6 +599,91 @@ func (x *CompleteRequest) GetBody() []byte {
 func (x *CompleteRequest) GetError() string {
 	if x != nil {
 		return x.Error
+	}
+	return ""
+}
+
+type isCompleteRequest_Result interface {
+	isCompleteRequest_Result()
+}
+
+type CompleteRequest_Body struct {
+	Body []byte `protobuf:"bytes,5,opt,name=body,proto3,oneof"`
+}
+
+type CompleteRequest_Blob struct {
+	Blob *BlobRef `protobuf:"bytes,7,opt,name=blob,proto3,oneof"`
+}
+
+func (*CompleteRequest_Body) isCompleteRequest_Result() {}
+
+func (*CompleteRequest_Blob) isCompleteRequest_Result() {}
+
+// Output of the handler in blob storage. Deleting it is the job of the storage (TTL of the key prefix).
+type BlobRef struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Location      string                 `protobuf:"bytes,1,opt,name=location,proto3" json:"location,omitempty"` // address of the object, s3://<bucket>/<key>
+	Size          int64                  `protobuf:"varint,2,opt,name=size,proto3" json:"size,omitempty"`        // bytes of the output, before encoding
+	Sha256        string                 `protobuf:"bytes,3,opt,name=sha256,proto3" json:"sha256,omitempty"`     // of the output before encoding, lowercase hex
+	Encoding      string                 `protobuf:"bytes,4,opt,name=encoding,proto3" json:"encoding,omitempty"` // of the stored object: "zstd"; empty - stored as is
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BlobRef) Reset() {
+	*x = BlobRef{}
+	mi := &file_taskgrid_worker_remote_v1_remote_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BlobRef) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BlobRef) ProtoMessage() {}
+
+func (x *BlobRef) ProtoReflect() protoreflect.Message {
+	mi := &file_taskgrid_worker_remote_v1_remote_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BlobRef.ProtoReflect.Descriptor instead.
+func (*BlobRef) Descriptor() ([]byte, []int) {
+	return file_taskgrid_worker_remote_v1_remote_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *BlobRef) GetLocation() string {
+	if x != nil {
+		return x.Location
+	}
+	return ""
+}
+
+func (x *BlobRef) GetSize() int64 {
+	if x != nil {
+		return x.Size
+	}
+	return 0
+}
+
+func (x *BlobRef) GetSha256() string {
+	if x != nil {
+		return x.Sha256
+	}
+	return ""
+}
+
+func (x *BlobRef) GetEncoding() string {
+	if x != nil {
+		return x.Encoding
 	}
 	return ""
 }
@@ -586,7 +696,7 @@ type CompleteResponse struct {
 
 func (x *CompleteResponse) Reset() {
 	*x = CompleteResponse{}
-	mi := &file_taskgrid_worker_remote_v1_remote_proto_msgTypes[7]
+	mi := &file_taskgrid_worker_remote_v1_remote_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -598,7 +708,7 @@ func (x *CompleteResponse) String() string {
 func (*CompleteResponse) ProtoMessage() {}
 
 func (x *CompleteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_taskgrid_worker_remote_v1_remote_proto_msgTypes[7]
+	mi := &file_taskgrid_worker_remote_v1_remote_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -611,7 +721,7 @@ func (x *CompleteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompleteResponse.ProtoReflect.Descriptor instead.
 func (*CompleteResponse) Descriptor() ([]byte, []int) {
-	return file_taskgrid_worker_remote_v1_remote_proto_rawDescGZIP(), []int{7}
+	return file_taskgrid_worker_remote_v1_remote_proto_rawDescGZIP(), []int{8}
 }
 
 var File_taskgrid_worker_remote_v1_remote_proto protoreflect.FileDescriptor
@@ -644,14 +754,21 @@ const file_taskgrid_worker_remote_v1_remote_proto_rawDesc = "" +
 	"\apayload\x18\x04 \x01(\fR\apayload\x1a7\n" +
 	"\tMetaEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc6\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8c\x02\n" +
 	"\x0fCompleteRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x17\n" +
 	"\atask_id\x18\x02 \x01(\tR\x06taskId\x12\x18\n" +
 	"\aattempt\x18\x03 \x01(\x05R\aattempt\x129\n" +
-	"\x06status\x18\x04 \x01(\x0e2!.taskgrid.worker.remote.v1.StatusR\x06status\x12\x12\n" +
-	"\x04body\x18\x05 \x01(\fR\x04body\x12\x14\n" +
-	"\x05error\x18\x06 \x01(\tR\x05error\"\x12\n" +
+	"\x06status\x18\x04 \x01(\x0e2!.taskgrid.worker.remote.v1.StatusR\x06status\x12\x14\n" +
+	"\x04body\x18\x05 \x01(\fH\x00R\x04body\x128\n" +
+	"\x04blob\x18\a \x01(\v2\".taskgrid.worker.remote.v1.BlobRefH\x00R\x04blob\x12\x14\n" +
+	"\x05error\x18\x06 \x01(\tR\x05errorB\b\n" +
+	"\x06result\"m\n" +
+	"\aBlobRef\x12\x1a\n" +
+	"\blocation\x18\x01 \x01(\tR\blocation\x12\x12\n" +
+	"\x04size\x18\x02 \x01(\x03R\x04size\x12\x16\n" +
+	"\x06sha256\x18\x03 \x01(\tR\x06sha256\x12\x1a\n" +
+	"\bencoding\x18\x04 \x01(\tR\bencoding\"\x12\n" +
 	"\x10CompleteResponse*A\n" +
 	"\x06Status\x12\x16\n" +
 	"\x12STATUS_UNSPECIFIED\x10\x00\x12\b\n" +
@@ -677,7 +794,7 @@ func file_taskgrid_worker_remote_v1_remote_proto_rawDescGZIP() []byte {
 }
 
 var file_taskgrid_worker_remote_v1_remote_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_taskgrid_worker_remote_v1_remote_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_taskgrid_worker_remote_v1_remote_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_taskgrid_worker_remote_v1_remote_proto_goTypes = []any{
 	(Status)(0),              // 0: taskgrid.worker.remote.v1.Status
 	(*SidecarMessage)(nil),   // 1: taskgrid.worker.remote.v1.SidecarMessage
@@ -687,25 +804,27 @@ var file_taskgrid_worker_remote_v1_remote_proto_goTypes = []any{
 	(*Demand)(nil),           // 5: taskgrid.worker.remote.v1.Demand
 	(*Attempt)(nil),          // 6: taskgrid.worker.remote.v1.Attempt
 	(*CompleteRequest)(nil),  // 7: taskgrid.worker.remote.v1.CompleteRequest
-	(*CompleteResponse)(nil), // 8: taskgrid.worker.remote.v1.CompleteResponse
-	nil,                      // 9: taskgrid.worker.remote.v1.Attempt.MetaEntry
+	(*BlobRef)(nil),          // 8: taskgrid.worker.remote.v1.BlobRef
+	(*CompleteResponse)(nil), // 9: taskgrid.worker.remote.v1.CompleteResponse
+	nil,                      // 10: taskgrid.worker.remote.v1.Attempt.MetaEntry
 }
 var file_taskgrid_worker_remote_v1_remote_proto_depIdxs = []int32{
-	2, // 0: taskgrid.worker.remote.v1.SidecarMessage.hello:type_name -> taskgrid.worker.remote.v1.Hello
-	3, // 1: taskgrid.worker.remote.v1.SidecarMessage.credit:type_name -> taskgrid.worker.remote.v1.Credit
-	6, // 2: taskgrid.worker.remote.v1.NodeMessage.attempt:type_name -> taskgrid.worker.remote.v1.Attempt
-	5, // 3: taskgrid.worker.remote.v1.NodeMessage.demand:type_name -> taskgrid.worker.remote.v1.Demand
-	9, // 4: taskgrid.worker.remote.v1.Attempt.meta:type_name -> taskgrid.worker.remote.v1.Attempt.MetaEntry
-	0, // 5: taskgrid.worker.remote.v1.CompleteRequest.status:type_name -> taskgrid.worker.remote.v1.Status
-	1, // 6: taskgrid.worker.remote.v1.Node.Connect:input_type -> taskgrid.worker.remote.v1.SidecarMessage
-	7, // 7: taskgrid.worker.remote.v1.Node.Complete:input_type -> taskgrid.worker.remote.v1.CompleteRequest
-	4, // 8: taskgrid.worker.remote.v1.Node.Connect:output_type -> taskgrid.worker.remote.v1.NodeMessage
-	8, // 9: taskgrid.worker.remote.v1.Node.Complete:output_type -> taskgrid.worker.remote.v1.CompleteResponse
-	8, // [8:10] is the sub-list for method output_type
-	6, // [6:8] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	2,  // 0: taskgrid.worker.remote.v1.SidecarMessage.hello:type_name -> taskgrid.worker.remote.v1.Hello
+	3,  // 1: taskgrid.worker.remote.v1.SidecarMessage.credit:type_name -> taskgrid.worker.remote.v1.Credit
+	6,  // 2: taskgrid.worker.remote.v1.NodeMessage.attempt:type_name -> taskgrid.worker.remote.v1.Attempt
+	5,  // 3: taskgrid.worker.remote.v1.NodeMessage.demand:type_name -> taskgrid.worker.remote.v1.Demand
+	10, // 4: taskgrid.worker.remote.v1.Attempt.meta:type_name -> taskgrid.worker.remote.v1.Attempt.MetaEntry
+	0,  // 5: taskgrid.worker.remote.v1.CompleteRequest.status:type_name -> taskgrid.worker.remote.v1.Status
+	8,  // 6: taskgrid.worker.remote.v1.CompleteRequest.blob:type_name -> taskgrid.worker.remote.v1.BlobRef
+	1,  // 7: taskgrid.worker.remote.v1.Node.Connect:input_type -> taskgrid.worker.remote.v1.SidecarMessage
+	7,  // 8: taskgrid.worker.remote.v1.Node.Complete:input_type -> taskgrid.worker.remote.v1.CompleteRequest
+	4,  // 9: taskgrid.worker.remote.v1.Node.Connect:output_type -> taskgrid.worker.remote.v1.NodeMessage
+	9,  // 10: taskgrid.worker.remote.v1.Node.Complete:output_type -> taskgrid.worker.remote.v1.CompleteResponse
+	9,  // [9:11] is the sub-list for method output_type
+	7,  // [7:9] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_taskgrid_worker_remote_v1_remote_proto_init() }
@@ -721,13 +840,17 @@ func file_taskgrid_worker_remote_v1_remote_proto_init() {
 		(*NodeMessage_Attempt)(nil),
 		(*NodeMessage_Demand)(nil),
 	}
+	file_taskgrid_worker_remote_v1_remote_proto_msgTypes[6].OneofWrappers = []any{
+		(*CompleteRequest_Body)(nil),
+		(*CompleteRequest_Blob)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_taskgrid_worker_remote_v1_remote_proto_rawDesc), len(file_taskgrid_worker_remote_v1_remote_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   9,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -1,15 +1,34 @@
+// Fetcher - handler of the crawler behind handler-sidecar: one call is one HTTP exchange, no retries inside.
+//
+// Errors are gRPC statuses (the sidecar maps them to attempt statuses, see handler-sidecar/README.md):
+// - any response of the site, including 404 and 500, is OK: it is content;
+// - INVALID_ARGUMENT - the URL is not an absolute http(s) URL;
+// - FAILED_PRECONDITION - the site cannot be reached: DNS, connect, TLS, timeout, broken response; final, no retry;
+// - OUT_OF_RANGE - the body is larger than the limit of the fetcher;
+// - INTERNAL - failure of the fetcher itself; retried.
 syntax = "proto3";
 
 package crawler.fetcher.v1;
 
+option java_multiple_files = true;
+option java_package = "io.github.deripas.crawler.fetcher.v1";
+
 service Fetcher {
-  rpc Fetch(FetchRequest) returns (stream FetchResponse);
+  // GET of the URL; redirects are followed.
+  rpc Fetch(FetchRequest) returns (FetchResponse);
 }
 
 message FetchRequest {
-  string url = 1;
+  string url = 1;           // absolute http(s) URL
 }
 
 message FetchResponse {
-  bytes content = 1;
+  int32 status = 1;         // HTTP status of the final response
+  repeated Header headers = 2;
+  bytes body = 3;           // decoded from Content-Encoding
+}
+
+message Header {
+  string name = 1;
+  string value = 2;
 }

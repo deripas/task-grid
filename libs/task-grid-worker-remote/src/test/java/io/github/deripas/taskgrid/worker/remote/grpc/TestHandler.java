@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <ul>
  *   <li>{@code fail} - answers INVALID_ARGUMENT;</li>
  *   <li>{@code sleep:<ms>} - answers after a pause;</li>
+ *   <li>{@code big:<bytes>} - answers with that many bytes of text more, before the metadata;</li>
  *   <li>anything else - answers at once.</li>
  * </ul>
  * The answer is the request, then the received {@code x-*} metadata as {@code key=value} lines, sorted.
@@ -120,6 +121,10 @@ final class TestHandler implements AutoCloseable {
                 Thread.sleep(Long.parseLong(command.substring("sleep:".length())));
             }
             final StringBuilder answer = new StringBuilder(command);
+            if (command.startsWith("big:")) {
+                final int size = Integer.parseInt(command.substring("big:".length()));
+                answer.append('\n').append(text(size));
+            }
             headers().forEach((k, v) -> answer.append('\n').append(k).append('=').append(v));
             response.onNext(answer.toString().getBytes(StandardCharsets.UTF_8));
             response.onCompleted();
@@ -129,6 +134,18 @@ final class TestHandler implements AutoCloseable {
         } finally {
             running.decrementAndGet();
         }
+    }
+
+    /**
+     * Compressible text of that many bytes: numbered lines like a sitemap.
+     */
+    static String text(int size) {
+        final StringBuilder out = new StringBuilder(size + 64);
+        for (int i = 0; out.length() < size; i++) {
+            out.append("<url><loc>https://example.com/page/").append(i).append("</loc></url>\n");
+        }
+        out.setLength(size);
+        return out.toString();
     }
 
     private static Map<String, String> headers() {

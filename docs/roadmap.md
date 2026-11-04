@@ -16,10 +16,14 @@ Agreed decisions - [decisions.md](decisions.md), layout - [structure.md](structu
    drain by half-close; arch-go rules; `make verify` covers Go too.
 7. `[x]` **Java - Go smoke test.** `SidecarCompatibilityIT`: a node with `RemoteWorker` and the real `handler-sidecar`
    image (Testcontainers) in front of a test handler - results with meta, handler error, drain on SIGTERM; `make it`.
-8. `[ ]` **Fetcher.** Code generation for `fetcher-api`, gRPC server over Apache HttpClient, tests on WireMock.
-9. `[ ]` **Starter.** Spring Boot auto-configuration of a single node.
-10. `[ ]` **url-manager: synchronous `POST /fetch`.** End to end url-manager - sidecar - fetcher,
+8. `[x]` **Fetcher.** Unary `fetcher.proto` with code generation in `fetcher-api`; `fetcher` - plain Java process, gRPC
+   server on virtual threads over Apache HttpClient 5, failures as gRPC statuses; tests on WireMock.
+9. `[x]` **Large results.** The sidecar takes handler responses up to 100 MiB (a sitemap.xml) and puts those above
+   `INLINE_MAX` into S3 (zstd); `Complete` carries a `BlobRef`, the node gets `Blob.Ref`; reading it is an adapter's job.
+   SeaweedFS in `SidecarCompatibilityIT`.
+10. `[ ]` **Starter.** Spring Boot auto-configuration of a single node.
+11. `[ ]` **url-manager: synchronous `POST /fetch`.** End to end url-manager - sidecar - fetcher,
    integration test (`make it`).
-11. `[ ]` **url-manager: RabbitMQ with reply_to.** Typed client protocol, limits, deduplication.
-12. `[ ]` **Pekko engine.** Clustered url-manager, deployable for load tests.
-13. `[ ]` **Later.** gRPC long polling, pauses per key (crawl-delay), blob storage for large results, metrics.
+12. `[ ]` **url-manager: RabbitMQ with reply_to.** Typed client protocol, limits, deduplication.
+13. `[ ]` **Pekko engine.** Clustered url-manager, deployable for load tests.
+14. `[ ]` **Later.** gRPC long polling, pauses per key (crawl-delay), metrics.

@@ -56,13 +56,16 @@ public sealed interface Blob {
     /**
      * Content in blob storage.
      *
-     * @param location storage-specific address of the object, e.g. a key in a bucket or a SeaweedFS fid
-     * @param hash     SHA-256 of the content, as computed when it was stored
+     * @param location storage-specific address of the object, e.g. {@code s3://<bucket>/<key>}
+     * @param size     of the content, before encoding
+     * @param hash     SHA-256 of the content before encoding, as computed when it was stored
+     * @param encoding of the stored object, e.g. {@code zstd}; {@code null} - stored as is
      */
     record Ref(
         String location,
         long size,
-        String hash
+        String hash,
+        String encoding
     ) implements Blob {
         public Ref {
             Objects.requireNonNull(location, "location");

@@ -1,8 +1,8 @@
 # Architecture rules of handler-sidecar. Check: make arch (go tool -modfile=tools.mod arch-go)
 #
-#   cmd/handler-sidecar -> internal/app -> internal/node, internal/handler (adapters)
+#   cmd/handler-sidecar -> internal/app -> internal/node, internal/handler, internal/blob (adapters)
 #                                     \-> internal/sidecar (core: ports, lifecycle) -> internal/sidecar/credit -> -
-#                                     \-> internal/config -> Config of sidecar and handler
+#                                     \-> internal/config -> Config of sidecar, handler and blob
 #   adapters -> ports of the core (only internal/node: Hello, Event, errors of the port) and internal/domain
 #   core -> internal/domain; the protocol (internal/gen) and libraries - only in the adapters
 #
@@ -46,6 +46,7 @@ dependenciesRules:
       internal:
         - "**.internal.sidecar"
         - "**.internal.handler"
+        - "**.internal.blob"
     shouldNotDependsOn:
       external:
         - "github.com.**"
@@ -92,6 +93,16 @@ dependenciesRules:
       external:
         - "google.golang.org.**"
 
+  # Blob adapter: implements the port Blobs (needs only domain types), S3 client and zstd; neither the protocol
+  # of the node nor gRPC.
+  - package: "**.internal.blob.**"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.internal.domain.**"
+      external:
+        - "github.com.minio.**"
+        - "github.com.klauspost.**"
+
   # Generated code - only protobuf / gRPC.
   - package: "**.internal.gen.**"
     shouldNotDependsOn:
@@ -100,6 +111,7 @@ dependenciesRules:
         - "**.internal.sidecar.**"
         - "**.internal.node.**"
         - "**.internal.handler.**"
+        - "**.internal.blob.**"
         - "**.internal.domain.**"
         - "**.internal.config.**"
     shouldOnlyDependsOn:
@@ -116,4 +128,6 @@ contentsRules:
   - package: "**.internal.node"
     shouldNotContainInterfaces: true
   - package: "**.internal.handler"
+    shouldNotContainInterfaces: true
+  - package: "**.internal.blob"
     shouldNotContainInterfaces: true

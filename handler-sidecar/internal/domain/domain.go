@@ -38,8 +38,17 @@ type Attempt struct {
 // Result - outcome of a handler call.
 type Result struct {
 	Status Status
-	Body   []byte // Done: answer of the handler as is
-	Error  string // not Done: description of the failure
+	Body   []byte   // Done: answer of the handler as is; nil when it is in Blob
+	Blob   *BlobRef // Done: the answer put into blob storage instead of Body
+	Error  string   // not Done: description of the failure
+}
+
+// BlobRef - an answer of the handler in blob storage.
+type BlobRef struct {
+	Location string // address of the object, s3://<bucket>/<key>
+	Size     int64  // bytes of the answer, before encoding
+	Sha256   string // of the answer before encoding, lowercase hex
+	Encoding string // of the stored object: "zstd"; empty - stored as is
 }
 
 // Completion - result of an attempt for the node.

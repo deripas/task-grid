@@ -89,8 +89,21 @@ message CompleteRequest {
   string task_id = 2;
   int32 attempt = 3;        // Attempt.number
   Status status = 4;
-  bytes body = 5;           // DONE: output of the handler as is
+  // DONE: output of the handler - inline, or, above the inline limit of the sidecar, a reference to the object
+  // the sidecar has put into blob storage
+  oneof result {
+    bytes body = 5;
+    BlobRef blob = 7;
+  }
   string error = 6;         // not DONE: description of the failure
+}
+
+// Output of the handler in blob storage. Deleting it is the job of the storage (TTL of the key prefix).
+message BlobRef {
+  string location = 1;      // address of the object, s3://<bucket>/<key>
+  int64 size = 2;           // bytes of the output, before encoding
+  string sha256 = 3;        // of the output before encoding, lowercase hex
+  string encoding = 4;      // of the stored object: "zstd"; empty - stored as is
 }
 
 message CompleteResponse {}

@@ -5,6 +5,7 @@ import io.github.deripas.taskgrid.task.AttemptStatus;
 import io.github.deripas.taskgrid.task.Blob;
 import io.github.deripas.taskgrid.worker.remote.Session;
 import io.github.deripas.taskgrid.worker.remote.Sidecars;
+import io.github.deripas.taskgrid.worker.remote.v1.BlobRef;
 import io.github.deripas.taskgrid.worker.remote.v1.CompleteRequest;
 import io.github.deripas.taskgrid.worker.remote.v1.CompleteResponse;
 import io.github.deripas.taskgrid.worker.remote.v1.Hello;
@@ -43,6 +44,12 @@ public final class NodeService extends NodeGrpc.NodeImplBase {
                 .asRuntimeException());
             return;
         }
+        if (request.hasBlob() && !valid(request.getBlob())) {
+            responses.onError(Status.INVALID_ARGUMENT
+                .withDescription("blob: location, size >= 0 and sha256 are required")
+                .asRuntimeException());
+            return;
+        }
         sidecars.complete(request.getWorkerId(), toDomain(request, status));
         responses.onNext(CompleteResponse.getDefaultInstance());
         responses.onCompleted();
@@ -53,12 +60,30 @@ public final class NodeService extends NodeGrpc.NodeImplBase {
      */
     private static AttemptResult toDomain(CompleteRequest request, AttemptStatus status) {
         final Blob body = status == AttemptStatus.DONE
-            ? Blob.of(request.getBody().toByteArray())
+            ? toDomain(request)
             : null;
         final String error = status == AttemptStatus.DONE
             ? null
             : request.getError();
         return new AttemptResult(request.getTaskId(), request.getAttempt(), status, body, error);
+    }
+
+    /**
+     * Inline body, or the reference to it in blob storage; no result at all - an empty body.
+     */
+    private static Blob toDomain(CompleteRequest request) {
+        if (!request.hasBlob()) {
+            return Blob.of(request.getBody().toByteArray());
+        }
+        final BlobRef ref = request.getBlob();
+        final String encoding = ref.getEncoding().isEmpty()
+            ? null
+            : ref.getEncoding();
+        return new Blob.Ref(ref.getLocation(), ref.getSize(), ref.getSha256(), encoding);
+    }
+
+    private static boolean valid(BlobRef ref) {
+        return !ref.getLocation().isBlank() && ref.getSize() >= 0 && !ref.getSha256().isBlank();
     }
 
     /**

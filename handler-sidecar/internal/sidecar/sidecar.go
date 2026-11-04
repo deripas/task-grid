@@ -1,12 +1,13 @@
 // Package sidecar - the core: a session with the node, credit, execution of attempts, delivery of results, drain.
 //
-// The outside world is reached through ports (ports.go): Node and Handler; implementations live in the adapters
-// internal/node and internal/handler. Distribution of credit is a pure algorithm in the subpackage credit.
+// The outside world is reached through ports (ports.go): Node, Handler and Blobs; implementations live in
+// the adapters internal/node, internal/handler and internal/blob. Distribution of credit is a pure algorithm in the subpackage credit.
 package sidecar
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/rand/v2"
@@ -31,6 +32,7 @@ type Config struct {
 	WorkerID      string // stable name of the instance (pod name)
 	Kind          string // kind of tasks the handler executes
 	Capacity      int    // attempts the handler runs at once
+	InlineMax     int    // bytes; a larger answer goes to blob storage
 	RetryInterval time.Duration
 	DrainTimeout  time.Duration
 }
@@ -41,6 +43,8 @@ type Config struct {
 //     of a session older than a second, otherwise after a pause).
 //   - Credit: unused credit plus attempts in progress <= Capacity, by the demand of the node. An attempt beyond
 //     credit is not executed: its result is RETRY.
+//   - An answer above InlineMax is put into blob storage within the slot of the attempt (memory stays bounded
+//     by Capacity), the result carries the reference. No storage - FAILED, the storage fails - RETRY.
 //   - A result is repeated until OK; rejected by the node (INVALID_ARGUMENT) - given up.
 //   - Drain (cancellation of the context of Run): no more credit, half-close of the stream; attempts in progress
 //     are finished and delivered, the node closes the stream; after DrainTimeout everything is abandoned.
@@ -49,6 +53,7 @@ type Sidecar struct {
 	log     *slog.Logger
 	node    Node
 	handler Handler
+	blobs   Blobs // nil - no blob storage: answers above InlineMax fail
 
 	mu       sync.Mutex // session and credit
 	credits  *credit.Ledger[*session]
@@ -72,13 +77,14 @@ type session struct {
 	drain  chan struct{} // closed when the sidecar drains
 }
 
-// New creates a sidecar.
-func New(cfg Config, node Node, handler Handler, log *slog.Logger) *Sidecar {
+// New creates a sidecar; blobs is nil when no blob storage is configured.
+func New(cfg Config, node Node, handler Handler, blobs Blobs, log *slog.Logger) *Sidecar {
 	s := &Sidecar{
 		cfg:     cfg,
 		log:     log,
 		node:    node,
 		handler: handler,
+		blobs:   blobs,
 		credits: credit.New[*session](cfg.Capacity),
 		drainCh: make(chan struct{}),
 	}
@@ -244,17 +250,36 @@ func (s *Sidecar) accept(sess *session, a domain.Attempt) {
 	go s.run(a)
 }
 
-// run executes an attempt: the slot is free as soon as the handler answers (delivery is outside the slot).
+// run executes an attempt: the slot is free as soon as the answer is ready (delivery is outside the slot).
 func (s *Sidecar) run(a domain.Attempt) {
 	defer s.pending.Done()
 	started := time.Now()
-	res := s.handler.Call(s.hard, a)
+	res := s.offload(a, s.handler.Call(s.hard, a))
 	s.mu.Lock()
 	wake(s.credits.Finish())
 	s.mu.Unlock()
 	s.log.Debug("attempt finished", "task", a.TaskID, "attempt", a.Number, "status", res.Status,
-		"ms", time.Since(started).Milliseconds(), "bytes", len(res.Body))
+		"ms", time.Since(started).Milliseconds(), "bytes", len(res.Body), "blob", res.Blob != nil)
 	s.complete(domain.Completion{TaskID: a.TaskID, Attempt: a.Number, Result: res})
+}
+
+// offload puts an answer above InlineMax into blob storage: the result carries the reference instead of the body.
+func (s *Sidecar) offload(a domain.Attempt, res domain.Result) domain.Result {
+	if res.Status != domain.Done || len(res.Body) <= s.cfg.InlineMax {
+		return res
+	}
+	if s.blobs == nil {
+		return domain.Result{
+			Status: domain.Failed,
+			Error:  fmt.Sprintf("answer of %d bytes above the inline limit %d, no blob storage", len(res.Body), s.cfg.InlineMax),
+		}
+	}
+	ref, err := s.blobs.Put(s.hard, a.TaskID, res.Body)
+	if err != nil {
+		s.log.Warn("blob not stored", "task", a.TaskID, "attempt", a.Number, "bytes", len(res.Body), "err", err)
+		return domain.Result{Status: domain.Retry, Error: "blob storage: " + err.Error()}
+	}
+	return domain.Result{Status: domain.Done, Blob: &ref}
 }
 
 // complete delivers a result until OK; ErrRejected - it will never be accepted, no point in repeating.

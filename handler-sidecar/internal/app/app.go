@@ -1,4 +1,4 @@
-// Package app assembles the sidecar: settings -> adapters (node, handler) -> core (sidecar), stop signals.
+// Package app assembles the sidecar: settings -> adapters (node, handler, blob) -> core (sidecar), stop signals.
 // The only package that knows all the others.
 package app
 
@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/deripas/task-grid/handler-sidecar/internal/blob"
 	"github.com/deripas/task-grid/handler-sidecar/internal/config"
 	"github.com/deripas/task-grid/handler-sidecar/internal/handler"
 	"github.com/deripas/task-grid/handler-sidecar/internal/node"
@@ -41,12 +42,22 @@ func Run() int {
 	}
 	defer n.Close()
 
-	s := sidecar.New(cfg.Sidecar, n, h, log)
+	// a nil *blob.Store in the interface would not be nil: the port stays unset without storage
+	var blobs sidecar.Blobs
+	if cfg.Blob.Endpoint != "" {
+		if blobs, err = blob.New(cfg.Blob); err != nil {
+			log.Error("blob storage client", "err", err)
+			return 1
+		}
+	}
+
+	s := sidecar.New(cfg.Sidecar, n, h, blobs, log)
 	defer s.Close()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
-	log.Info("started", "node", cfg.NodeAddress, "handler", cfg.Handler.Target, "method", cfg.Handler.Method)
+	log.Info("started", "node", cfg.NodeAddress, "handler", cfg.Handler.Target, "method", cfg.Handler.Method,
+		"inline_max", cfg.Sidecar.InlineMax, "blob", cfg.Blob.Endpoint, "bucket", cfg.Blob.Bucket, "prefix", cfg.Blob.Prefix)
 	if err := s.Run(ctx); err != nil {
 		// the orchestrator and monitoring must see that the stop was not clean: results are lost
 		log.Error("stopped", "err", err)
