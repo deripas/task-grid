@@ -1,0 +1,26 @@
+spring:
+  application:
+    name: url-manager
+  threads:
+    virtual:
+      enabled: true
+  mvc:
+    problemdetails:
+      enabled: true
+
+server:
+  port: 8080
+  shutdown: graceful
+
+url-manager:
+  grpc-port: 9090
+  default-timeout: 60s
+  max-timeout: 10m
+  max-attempts: 3
+  result-ttl: 1m
+  shutdown-timeout: 5s
+  blob:
+    endpoint: ${BLOB_S3_ENDPOINT:}
+    region: ${BLOB_S3_REGION:us-east-1}
+    access-key: ${BLOB_S3_ACCESS_KEY:}
+    secret-key: ${BLOB_S3_SECRET_KEY:}

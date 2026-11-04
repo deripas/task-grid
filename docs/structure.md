@@ -16,7 +16,8 @@ starters/                  Spring Boot starters over libs/ (not necessarily one 
 crawler-example/           crawler built on task-grid; imports the Spring Boot BOM
   fetcher-api/             fetcher.proto - handler protocol shared by fetcher and url-manager
   fetcher/                 handler: plain Java gRPC server over Apache HttpClient, runs behind handler-sidecar
-  url-manager/             Spring Boot application: client protocol (REST, RabbitMQ), queue, dispatcher
+  url-manager/             Spring Boot application: POST /fetch on an in-memory task-grid node, remote worker of the
+                           fetch kind, large pages read from S3
 docs/                      project documents
 .local/                    working notes and scratch files, not in git
 ```
@@ -33,15 +34,18 @@ Names are tentative until the corresponding roadmap step.
 ## Dependency direction
 
 ```
-crawler-example/*  ->  starters/*  ->  libs/* (engines, transports)  ->  task-grid-core
+crawler-example/*  ->  starters/* (later)  ->  libs/* (engines, transports)  ->  task-grid-core
 ```
+
+Until there are starters, `url-manager` wires the libraries itself (its `UrlManagerConfiguration`).
 
 - `task-grid-core` depends on nothing but the JDK (plus slf4j-api, lombok).
 - `task-grid-worker-remote` adds gRPC API and protobuf; the transport (netty, ...) is chosen by the application.
 - Libraries never depend on Spring; starters never depend on example applications.
-- `fetcher` and `url-manager` share only `fetcher-api`; neither depends on the other.
-- `crawler-example` imports the gRPC BOM before the Spring Boot BOM: versions of task-grid win (generated stubs
-  need the gRPC runtime of their plugin).
+- `fetcher` and `url-manager` share only `fetcher-api`; neither depends on the other (`UrlManagerIT` runs the fetcher
+  in its test JVM: a test dependency only).
+- `crawler-example` imports the gRPC and JUnit BOMs before the Spring Boot BOM: versions of task-grid win (generated
+  stubs need the gRPC runtime of their plugin).
 
 ## Conventions
 

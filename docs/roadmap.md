@@ -1,7 +1,7 @@
 # Roadmap
 
 Moving the core over from the prototype (`crawler-maket/services/dispatch`) in small steps, not 1:1. Each step:
-discussion, changes, `make verify`, commit. Status: `[ ]` not started, `[~]` in progress, `[x]` done.
+discussion, changes, `make verify`, commit. Status: `[ ]` not started, `[~]` in progress, `[x]` done, `[-]` skipped.
 Agreed decisions - [decisions.md](decisions.md), layout - [structure.md](structure.md).
 
 1. `[x]` **Name and structure.** Coordinates, own root parent, module layout, `Makefile`.
@@ -21,9 +21,14 @@ Agreed decisions - [decisions.md](decisions.md), layout - [structure.md](structu
 9. `[x]` **Large results.** The sidecar takes handler responses up to 100 MiB (a sitemap.xml) and puts those above
    `INLINE_MAX` into S3 (zstd); `Complete` carries a `BlobRef`, the node gets `Blob.Ref`; reading it is an adapter's job.
    SeaweedFS in `SidecarCompatibilityIT`.
-10. `[ ]` **Starter.** Spring Boot auto-configuration of a single node.
-11. `[ ]` **url-manager: synchronous `POST /fetch`.** End to end url-manager - sidecar - fetcher,
-   integration test (`make it`).
-12. `[ ]` **url-manager: RabbitMQ with reply_to.** Typed client protocol, limits, deduplication.
-13. `[ ]` **Pekko engine.** Clustered url-manager, deployable for load tests.
-14. `[ ]` **Later.** gRPC long polling, pauses per key (crawl-delay), metrics.
+10. `[-]` **Starter.** Skipped: applications wire the libraries themselves for now; back when a second application
+   needs the same wiring (see Later).
+11. `[x]` **url-manager: synchronous `POST /fetch`.** Spring Boot application on the in-memory core (queue by affinity
+   key = host, one fetch per host at a time, no delay yet), remote worker for the `fetch` kind, answer like a proxy,
+   large pages streamed from S3; end to end url-manager - sidecar - fetcher - site with SeaweedFS (`UrlManagerIT`).
+12. `[ ]` **Domain queue: crawl-delay.** Politeness per host: the next attempt of a host not earlier than
+   completion + crawl-delay (and cooldown after 429); in-memory first. Requirements -
+   `crawler-maket/domain-queue-requirements.md`.
+13. `[ ]` **url-manager: RabbitMQ with reply_to.** Typed client protocol, limits, deduplication.
+14. `[ ]` **Pekko engine.** Clustered url-manager (queue partitions by host across nodes), deployable for load tests.
+15. `[ ]` **Later.** Spring Boot starter, gRPC long polling, metrics.

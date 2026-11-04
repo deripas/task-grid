@@ -26,6 +26,7 @@
 
     <properties>
         <wiremock.version>3.13.2</wiremock.version>
+        <awssdk.version>2.57.9</awssdk.version>
     </properties>
 
     <dependencyManagement>
@@ -35,9 +36,14 @@
                 <artifactId>fetcher-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <dependency>
+                <groupId>io.github.deripas</groupId>
+                <artifactId>fetcher</artifactId>
+                <version>${project.version}</version>
+            </dependency>
             <!--
-                Versions of task-grid win over the Spring Boot BOM: the first import of an artifact wins, and gRPC
-                stubs are generated with the plugin of ${grpc.version}. protobuf-java is managed directly in the root.
+                Versions of task-grid (gRPC, JUnit) win over the Spring Boot BOM: the first import of an artifact
+                wins, and gRPC stubs are generated with the plugin of ${grpc.version}. protobuf-java is managed directly in the root.
             -->
             <dependency>
                 <groupId>io.grpc</groupId>
@@ -47,9 +53,23 @@
                 <scope>import</scope>
             </dependency>
             <dependency>
+                <groupId>org.junit</groupId>
+                <artifactId>junit-bom</artifactId>
+                <version>${junit.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-dependencies</artifactId>
                 <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>software.amazon.awssdk</groupId>
+                <artifactId>bom</artifactId>
+                <version>${awssdk.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>

@@ -163,3 +163,21 @@ shutdown timeout of the handler, `DRAIN_TIMEOUT` + margin `< terminationGracePer
 - The put happens within the slot of the attempt: memory of the sidecar stays bounded by `CAPACITY` answers.
   No storage configured and an answer above `INLINE_MAX` - `FAILED` (configuration does not change between attempts);
   the storage fails - `RETRY`.
+
+## D20. url-manager: POST /fetch answers like a proxy, large pages are streamed
+
+- `POST /fetch {"url", "timeoutMs"}` (JSON: room for fields such as a request id or priority). The site answered -
+  200 with the body of the page, its `Content-Type` and the status of the site in `X-Fetch-Status` (404 of the site
+  is a page); fetch failed - 502, no page within the timeout - 504, bad URL or timeout - 400; errors are problem
+  details. Not JSON with a base64 body: a sitemap of 100 MiB would grow by a third and sit in memory.
+- One task per fetch: id - random UUID, kind `fetch`, affinity key - the host in lower case (one fetch of a host at
+  a time, the unit of politeness for crawl-delay, roadmap step 12); payload - `FetchRequest`.
+- The page is a stream end to end: `FetchResponse` is read field by field (status, headers, then the body as the
+  rest of the stream - the highest field number, written last), a `Blob.Ref` is read from S3 through zstd, and size
+  and SHA-256 are checked as the body is sent (a mismatch breaks the response).
+- S3 client - AWS SDK v2 with HttpClient 5 (`apache5-client`, its other HTTP clients excluded): minio-java brings
+  okhttp with Kotlin, guava, jackson 2 and bouncycastle. Path-style addressing (SeaweedFS, MinIO); no keys - the
+  default AWS credentials.
+- No starter: `UrlManagerConfiguration` wires the in-memory node (`MemoryTaskQueue`, `MemoryResultStore`,
+  `RemoteWorker`), components are not scanned. The gRPC server of the node starts before the web server and stops
+  after it, cancelling the sessions: by then nobody waits for results.
