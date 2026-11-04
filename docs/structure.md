@@ -25,9 +25,9 @@ Names are tentative until the corresponding roadmap step.
 
 | Module | Role |
 |---|---|
-| `libs/` remote worker library | dispatcher for workers behind the sidecar: gRPC protocol, credits, affinity |
+| `libs/` remote worker library | `Worker` for handlers behind handler-sidecar: gRPC protocol, credits, affinity |
 | `libs/` Pekko library | cluster engine: sharded queues and results, cluster-wide dispatch |
-| sidecar (Go) | process next to a remote worker; location and name decided with its step |
+| `handler-sidecar` (Go) | process next to a remote handler; location decided with its step |
 | `starters/` | auto-configuration of a task-grid node for Spring Boot applications |
 
 ## Dependency direction

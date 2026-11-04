@@ -28,13 +28,13 @@ Further libraries are added per engine or transport, not per domain area.
 load tests). Pekko lives in a separate library; core and the in-memory implementations work without it, so another
 engine can replace it. Pekko is introduced after the single-node flow works end to end.
 
-## D5. Worker is an interface; remote worker via a sidecar
+## D5. Worker is an interface; remote handlers via a sidecar
 
-Workers implement a JVM interface; an in-process implementation is plugged in directly. A remote worker is one of the
-implementations: tasks go over gRPC to a sidecar process next to the worker. The sidecar owns the non-trivial
-protocol logic (credits, lease extension, completion retries, large results, drain), so workers in any language
-(Java, Node.js) stay minimal: one unary gRPC method. The sidecar is written in Go: small static binary, fast start,
-low footprint next to the worker. Its name (the prototype called it `agent`) is open.
+`Worker` is a core interface; one implementation calls handlers inside the JVM, another sends attempts over gRPC
+to `handler-sidecar` processes deployed next to remote handlers. The sidecar owns the non-trivial protocol logic
+(credits, lease extension, completion retries, large results, drain), so handlers in any language (Java, Node.js)
+stay minimal: one unary gRPC method. The sidecar is written in Go: small static binary, fast start, low footprint
+next to the handler. The prototype called it `agent`.
 
 ## D6. Client protocol belongs to the application
 
@@ -46,3 +46,26 @@ reusable concerns (deduplication, limits, waiting for results) are library code.
 
 Everything in git (code, comments, docs, CLAUDE.md) is in English. Discussion happens in Russian.
 Working notes in `.local/` may be in any language.
+
+## D8. Minimal now, extend when needed
+
+Types and contracts get only the fields and operations the current step uses. Everything else from the prototype
+(leases, correlation, timings, attributes, rate limiting, deduplication, ...) is added by the step that needs it.
+Growth of structures and code should follow growth of the requirements and stay visible in history.
+
+## D9. Vocabulary
+
+Task (not request) is the unit submitted by a client; an attempt is one execution of a task. `Worker` is the core
+port that executes attempts (the prototype's `Dispatch`); a `Handler` does the actual work for a kind, in-process or
+remote behind `handler-sidecar`. Completion comes back through `AttemptCallback`, not a future: in a cluster the
+callback reaches the task's owner on any node. Attempt status and task status are separate enums.
+`Blob` is bytes inline or a reference to storage; the domain type does no I/O. Details - [concepts.md](concepts.md).
+
+## D10. Component properties travel in meta
+
+`Task` has only what every component needs: `id`, `payload`, `meta` (`Map<String, String>`). Properties used by
+particular components - kind (worker), affinity key (queue, remote worker), attempts (queue, in the result) - are
+meta keys declared as constants by the component that owns them, with typed access in that component only.
+New properties add a key, not a field. The whole task meta is passed to the handler and copied into `TaskResult`:
+correlation data of the client (e.g. RabbitMQ `reply_to`, `correlation_id`) comes back with the result on any node.
+Values that drive core logic stay typed fields: attempt number, statuses, error.
