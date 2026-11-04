@@ -60,7 +60,7 @@ public final class MemoryTaskQueue implements TaskQueue, AttemptCallback {
                     ? CompletableFuture.completedFuture(null)
                     : CompletableFuture.failedFuture(new IllegalArgumentException("task id is taken by another payload: " + task.id()));
             }
-            final String affinityKey = task.meta().get(AFFINITY_KEY);
+            final String affinityKey = task.meta().get(Task.AFFINITY_KEY);
             final String key = affinityKey != null
                 ? affinityKey
                 : UUID.randomUUID().toString();

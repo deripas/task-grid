@@ -86,3 +86,32 @@ A handler failure is final unless the handler says otherwise: `RetryableExceptio
 `FAILED`. Unknown failures are not retried blindly. `Blob` carries the SHA-256 of its content. A task submitted again
 with an id that is still in the queue is the same task if the payload hash matches (a client retry - accepted, not
 queued twice) and an error otherwise (the id is taken by another request).
+
+## D14. Remote worker: one bidi session, retry on session loss, affinity by the key
+
+- The sidecar and the node talk over `taskgrid.worker.remote.v1.Node`: `Connect` is one bidi stream per session
+  (sidecar: `Hello`, `Credit`; node: `Attempt`, `Demand`), `Complete` is unary and repeated by the sidecar until OK.
+  The prototype used two streams (`Connect` + `Credits`) glued by a session id in early headers; one stream needs neither.
+- Credit and demand are taken from the prototype as is: absolute `(limit, version)` and `(target, version)`,
+  demand in steps of capacity x 2^k, surplus credit returned by `Demand`.
+- No lease yet: when a session ends, its attempts in progress are retried (`RETRY`, the attempt counts). A late result
+  of such an attempt is ignored by the queue. Cost - a repeated execution after a network break. Lease (`Extend`,
+  deadline) and incarnation come with the cluster, where an attempt must outlive a node; graceful stop - D15.
+- Affinity follows the task: with `affinity-key` in meta - HRW over the sidecars of the kind, widened after
+  affinity-wait; without it - any sidecar. No per-kind rule in settings.
+- Payloads are sent inline only; a `Blob.Ref` payload is rejected until blob storage arrives.
+- The engine without Pekko is a single-thread executor around a pure state machine (`Allocator`), which the Pekko
+  engine will reuse.
+
+## D15. handler-sidecar: half-close is drain, single node for now
+
+- The sidecar stops by half-closing its `Connect` stream: the node sends no more attempts to the session, waits for
+  the results of its attempts in progress and closes the stream with OK. Cancellation of the call still ends the
+  session at once, its attempts are retried. No separate `Drain` RPC.
+- One session with one node (`NODE_ADDRESS`). Sessions with every node of a cluster (DNS), lease and restart detection
+  come with the cluster engine; the credit ledger already distributes slots among several sessions.
+- The handler gets the whole task meta as `x-meta-<key>` metadata. Handler statuses map to `DONE` / `FAILED` / `RETRY`
+  only; `RESOURCE_EXHAUSTED` and `ABORTED` are `RETRY` until `RATE_LIMITED` / `RELEASED` exist.
+- Results above `MAX_RESULT` (4 MiB, the inbound limit of the Java gRPC server) fail until blob storage exists.
+- Go module `github.com/deripas/task-grid/handler-sidecar`; code from `remote.proto` is generated with `protoc` and plugins
+  from `tools.mod` and committed, so a plain `go build` needs no protoc.

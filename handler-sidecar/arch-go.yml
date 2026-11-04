@@ -1,0 +1,119 @@
+# Architecture rules of handler-sidecar. Check: make arch (go tool -modfile=tools.mod arch-go)
+#
+#   cmd/handler-sidecar -> internal/app -> internal/node, internal/handler (adapters)
+#                                     \-> internal/sidecar (core: ports, lifecycle) -> internal/sidecar/credit -> -
+#                                     \-> internal/config -> Config of sidecar and handler
+#   adapters -> ports of the core (only internal/node: Hello, Event, errors of the port) and internal/domain
+#   core -> internal/domain; the protocol (internal/gen) and libraries - only in the adapters
+#
+# Patterns: "**.x.**" - package x and its subpackages. Tests (*_test.go) are not checked by arch-go.
+# External package - a path with a dot in the first segment (google.golang.org/...); the standard library is free.
+version: 1
+threshold:
+  compliance: 100
+  coverage: 100
+
+dependenciesRules:
+  # Entry point - only starts app.
+  - package: "**.cmd.**"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.internal.app.**"
+    shouldNotDependsOn:
+      external:
+        - "github.com.**"
+        - "google.golang.org.**"
+
+  # Assembly: knows everybody, nobody but cmd knows it (checked by the allowlists below).
+  - package: "**.internal.app.**"
+    shouldNotDependsOn:
+      internal:
+        - "**.cmd.**"
+
+  # Domain - pure types: neither internal packages nor libraries.
+  - package: "**.internal.domain.**"
+    shouldNotDependsOn:
+      internal:
+        - "github.com.deripas.task-grid.handler-sidecar.**"
+      external:
+        - "github.com.**"
+        - "google.golang.org.**"
+
+  # Settings: env -> Config of the packages (fields and their meaning belong to the owner; here only names of
+  # the variables and checks); no libraries.
+  - package: "**.internal.config.**"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.internal.sidecar"
+        - "**.internal.handler"
+    shouldNotDependsOn:
+      external:
+        - "github.com.**"
+        - "google.golang.org.**"
+
+  # Core: domain and its subpackage credit. Node and handler - only through ports (ports.go):
+  # neither the protocol (gen) nor gRPC nor other libraries.
+  - package: "**.internal.sidecar.**"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.internal.domain.**"
+        - "**.internal.sidecar.**"
+    shouldNotDependsOn:
+      external:
+        - "github.com.**"
+        - "google.golang.org.**"
+
+  # Credit - a pure algorithm: neither internal packages nor libraries.
+  - package: "**.internal.sidecar.credit"
+    shouldNotDependsOn:
+      internal:
+        - "github.com.deripas.task-grid.handler-sidecar.**"
+      external:
+        - "github.com.**"
+        - "google.golang.org.**"
+
+  # Node adapter: implements the port of the core (types of the port from sidecar, not its internals like credit),
+  # translates the protocol (gen) <-> domain.
+  - package: "**.internal.node.**"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.internal.sidecar"
+        - "**.internal.domain.**"
+        - "**.internal.gen.**"
+      external:
+        - "google.golang.org.**"
+
+  # Handler adapter: domain and gRPC; the protocol of the node is not needed.
+  - package: "**.internal.handler.**"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.internal.domain.**"
+        - "**.internal.handler.**"
+      external:
+        - "google.golang.org.**"
+
+  # Generated code - only protobuf / gRPC.
+  - package: "**.internal.gen.**"
+    shouldNotDependsOn:
+      internal:
+        - "**.internal.app.**"
+        - "**.internal.sidecar.**"
+        - "**.internal.node.**"
+        - "**.internal.handler.**"
+        - "**.internal.domain.**"
+        - "**.internal.config.**"
+    shouldOnlyDependsOn:
+      external:
+        - "google.golang.org.**"
+
+contentsRules:
+  # Domain and settings are data, no interfaces: ports are declared by their consumer (the core).
+  - package: "**.internal.domain.**"
+    shouldNotContainInterfaces: true
+  - package: "**.internal.config.**"
+    shouldNotContainInterfaces: true
+  # Adapters implement ports of the core and introduce no interfaces of their own.
+  - package: "**.internal.node"
+    shouldNotContainInterfaces: true
+  - package: "**.internal.handler"
+    shouldNotContainInterfaces: true

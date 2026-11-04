@@ -9,12 +9,6 @@ import java.util.concurrent.CompletionStage;
  */
 public interface TaskQueue {
     /**
-     * Task meta: tasks with the same value run one at a time, in order, preferably on the same handler instance.
-     * Absent - the task is independent.
-     */
-    String AFFINITY_KEY = "affinity-key";
-
-    /**
      * Result meta: number of attempts made.
      */
     String ATTEMPTS = "attempts";

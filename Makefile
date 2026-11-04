@@ -1,4 +1,5 @@
 MVN := ./mvnw -B
+SIDECAR := $(MAKE) -C handler-sidecar
 
 .PHONY: help build test verify clean
 
@@ -9,15 +10,19 @@ help:
 ## build: compile and package all modules without tests
 build:
 	$(MVN) package -DskipTests
+	$(SIDECAR) build
 
 ## test: unit tests
 test:
 	$(MVN) test
+	$(SIDECAR) test
 
-## verify: full check - unit tests and architecture rules (run before every commit)
+## verify: clean build, unit tests and architecture rules of Java and Go (run before every commit)
 verify:
-	$(MVN) verify
+	$(MVN) clean verify
+	$(SIDECAR) check
 
 ## clean: remove build output
 clean:
 	$(MVN) clean
+	rm -rf handler-sidecar/bin

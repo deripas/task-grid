@@ -8,14 +8,18 @@ Agreed decisions - [decisions.md](decisions.md), layout - [structure.md](structu
 2. `[x]` **Concepts and vocabulary.** Task / attempt, kind, affinity key, worker / handler, statuses, blob; core packages;
    in-process vs remote handler. Result - [concepts.md](concepts.md).
 3. `[x]` **task-grid-core: contracts.** Domain types and ports, `ArchitectureTest`.
-4. `[~]` **task-grid-core: in-memory MVP.** Queue per affinity key, result store, in-process worker and handler;
+4. `[x]` **task-grid-core: in-memory MVP.** Queue per affinity key, result store, in-process worker and handler;
    one JVM runs the whole flow.
-5. `[ ]` **Remote worker.** `Worker` for handlers behind handler-sidecar: protocol, credits, affinity.
-6. `[ ]` **handler-sidecar (Go).** Move from the prototype; `make check` covers Go too.
-7. `[ ]` **Fetcher.** Code generation for `fetcher-api`, gRPC server over Apache HttpClient, tests on WireMock.
-8. `[ ]` **Starter.** Spring Boot auto-configuration of a single node.
-9. `[ ]` **url-manager: synchronous `POST /fetch`.** End to end url-manager - sidecar - fetcher,
+5. `[x]` **Remote worker.** `task-grid-worker-remote`: protocol `taskgrid.worker.remote.v1` (one bidi session per
+   sidecar), credits, HRW affinity; in-process gRPC test with a Java sidecar. Lease, large results - later.
+6. `[x]` **handler-sidecar (Go).** One session with one node, credit, raw-codec handler call, results until OK,
+   drain by half-close; arch-go rules; `make verify` covers Go too.
+7. `[ ]` **Java - Go smoke test.** A node with `RemoteWorker` and the real `handler-sidecar` binary in front of a test
+   handler: the two sides of `remote.proto` are compatible (session, credit, results, drain).
+8. `[ ]` **Fetcher.** Code generation for `fetcher-api`, gRPC server over Apache HttpClient, tests on WireMock.
+9. `[ ]` **Starter.** Spring Boot auto-configuration of a single node.
+10. `[ ]` **url-manager: synchronous `POST /fetch`.** End to end url-manager - sidecar - fetcher,
    integration test (`make it`).
-10. `[ ]` **url-manager: RabbitMQ with reply_to.** Typed client protocol, limits, deduplication.
-11. `[ ]` **Pekko engine.** Clustered url-manager, deployable for load tests.
-12. `[ ]` **Later.** gRPC long polling, pauses per key (crawl-delay), blob storage for large results, metrics.
+11. `[ ]` **url-manager: RabbitMQ with reply_to.** Typed client protocol, limits, deduplication.
+12. `[ ]` **Pekko engine.** Clustered url-manager, deployable for load tests.
+13. `[ ]` **Later.** gRPC long polling, pauses per key (crawl-delay), blob storage for large results, metrics.

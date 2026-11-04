@@ -1,0 +1,96 @@
+// handler-sidecar <-> task-grid node.
+//
+// The sidecar runs next to a handler and connects to the node; the node sends it attempts of the handler's kind.
+// Payloads and results are bytes: their types are known only to whoever submits the task and to the handler.
+//
+// Slots belong to the sidecar (credits). The node sends attempts only while it holds credit of the session:
+// - the node tells its demand - how many attempts it would like to send to this sidecar (Demand);
+// - the sidecar grants slots as credit (Credit); unused credit plus attempts in progress never exceed its capacity.
+// Credit and demand are absolute values (limit / target with a version), not increments: a lost or repeated
+// message breaks nothing, and the node returns surplus credit with the same Demand.
+//
+// A session is one Connect stream. A new session of the same worker_id supersedes the previous one (its stream
+// is closed with OK). When a session breaks (cancellation, error), its attempts in progress are retried by the node:
+// a result sent for them later is accepted and ignored.
+//
+// Shutdown of the sidecar (drain): stop granting credit and half-close the stream. The node sends no more attempts,
+// waits for the results of the attempts in progress (Complete) and then closes the stream with OK.
+syntax = "proto3";
+
+package taskgrid.worker.remote.v1;
+
+option java_multiple_files = true;
+option java_package = "io.github.deripas.taskgrid.worker.remote.v1";
+option go_package = "github.com/deripas/task-grid/handler-sidecar/internal/gen/remote/v1;remotev1";
+
+service Node {
+  // Session of a sidecar with the node. The first message of the sidecar is Hello, then Credit as slots free up;
+  // the half-close of the sidecar is drain. The node sends attempts within the credit and its demand when it changes.
+  rpc Connect(stream SidecarMessage) returns (stream NodeMessage);
+
+  // Result of an attempt. OK - the result is taken (at-least-once): until OK the sidecar keeps the result
+  // and repeats the call; a repeated call is harmless.
+  rpc Complete(CompleteRequest) returns (CompleteResponse);
+}
+
+message SidecarMessage {
+  oneof msg {
+    Hello hello = 1;
+    Credit credit = 2;
+  }
+}
+
+// Opens the session.
+message Hello {
+  string worker_id = 1;     // stable name of the sidecar instance (pod name); marks its results
+  string kind = 2;          // kind of tasks the handler executes
+  int32 capacity = 3;       // attempts the handler runs at once: upper bound of the demand
+}
+
+// The node may send attempts with numbers up to limit (numbered from 1 in each session).
+message Credit {
+  int64 limit = 1;
+  int64 version = 2;        // grows with each Credit of the session
+}
+
+message NodeMessage {
+  oneof msg {
+    Attempt attempt = 1;
+    Demand demand = 2;
+  }
+}
+
+// Demand of the node for this sidecar; sent when it changes.
+message Demand {
+  // Absolute number of the session attempt the node would like credit up to: attempts already sent plus
+  // attempts waiting for this sidecar. Sending an attempt does not change it.
+  int64 target = 1;
+  // Version of the last Credit received. target below limit returns surplus credit: the sidecar lowers
+  // its limit to target only if version is still its current one (otherwise new credit is on its way).
+  int64 version = 2;
+}
+
+message Attempt {
+  string task_id = 1;
+  int32 number = 2;                 // attempt number of the task, from 1
+  map<string, string> meta = 3;     // whole task meta: kind, affinity key, keys of the application
+  bytes payload = 4;                // input of the handler as is
+}
+
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  DONE = 1;                 // there is a result; domain errors (HTTP 404) are DONE too, they are content
+  FAILED = 2;               // final, no retry
+  RETRY = 3;                // technical failure: the attempt counts, the task is retried
+}
+
+message CompleteRequest {
+  string worker_id = 1;
+  string task_id = 2;
+  int32 attempt = 3;        // Attempt.number
+  Status status = 4;
+  bytes body = 5;           // DONE: output of the handler as is
+  string error = 6;         // not DONE: description of the failure
+}
+
+message CompleteResponse {}

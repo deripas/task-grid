@@ -10,6 +10,8 @@ pom.xml                    root parent: versions, plugins, modules (no Spring Bo
 Makefile                   build entry points: make verify, make test, ...
 libs/                      reusable task-grid libraries, no Spring
   task-grid-core/          domain: types, contracts (ports), in-memory implementations; JDK only
+  task-grid-worker-remote/ Worker for handlers behind handler-sidecar: remote.proto (shared with Go), credits, gRPC
+handler-sidecar/           Go process next to a remote handler: session with the node, credit, results, drain
 starters/                  Spring Boot starters over libs/ (not necessarily one per library)
 crawler-example/           crawler built on task-grid; imports the Spring Boot BOM
   fetcher-api/             fetcher.proto - worker protocol shared by fetcher and url-manager
@@ -25,9 +27,7 @@ Names are tentative until the corresponding roadmap step.
 
 | Module | Role |
 |---|---|
-| `libs/` remote worker library | `Worker` for handlers behind handler-sidecar: gRPC protocol, credits, affinity |
 | `libs/` Pekko library | cluster engine: sharded queues and results, cluster-wide dispatch |
-| `handler-sidecar` (Go) | process next to a remote handler; location decided with its step |
 | `starters/` | auto-configuration of a task-grid node for Spring Boot applications |
 
 ## Dependency direction
@@ -36,11 +36,14 @@ Names are tentative until the corresponding roadmap step.
 crawler-example/*  ->  starters/*  ->  libs/* (engines, transports)  ->  task-grid-core
 ```
 
-- `task-grid-core` depends on nothing but the JDK.
+- `task-grid-core` depends on nothing but the JDK (plus slf4j-api, lombok).
+- `task-grid-worker-remote` adds gRPC API and protobuf; the transport (netty, ...) is chosen by the application.
 - Libraries never depend on Spring; starters never depend on example applications.
 - `fetcher` and `url-manager` share only `fetcher-api`; neither depends on the other.
 
 ## Conventions
 
 - Maven module directory = artifactId; groupId `io.github.deripas`; base package `io.github.deripas.taskgrid`.
-- Every module with more than one package has an `ArchitectureTest` (ArchUnit) run by `make verify`.
+- Every module with more than one package has an `ArchitectureTest` (ArchUnit) run by `make verify`;
+  `handler-sidecar` - `arch-go.yml`, run by `make verify` as well.
+- Go module path - `github.com/deripas/task-grid/<dir>`; generated code from shared proto files is committed.
