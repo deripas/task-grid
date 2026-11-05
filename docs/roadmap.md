@@ -30,6 +30,9 @@ Agreed decisions - [decisions.md](decisions.md), layout - [structure.md](structu
    back until a delay after the result of the previous one (finish to start); url-manager - 1 s per host. Delay from
    robots.txt, cooldown after 429 - through `DelayPolicy`, later. Requirements -
    `crawler-maket/domain-queue-requirements.md`.
-13. `[ ]` **url-manager: RabbitMQ with reply_to.** Typed client protocol, limits, deduplication.
+13. `[x]` **url-manager: RabbitMQ with reply_to.** Typed client protocol (`url-manager-api`), Spring AMQP; two ways
+   of handling by `ack`: `after-submit` (target: acknowledged once queued, the reply from the result callback of the
+   queue, `TaskQueue.onResult`) and `after-reply` (transitional, for the in-memory queue: acknowledged after the
+   reply is confirmed; requests of a host sharded to one instance by a consistent-hash exchange).
 14. `[ ]` **Pekko engine.** Clustered url-manager (queue partitions by host across nodes), deployable for load tests.
 15. `[ ]` **Later.** Spring Boot starter, gRPC long polling, metrics.

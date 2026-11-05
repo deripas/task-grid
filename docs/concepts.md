@@ -50,7 +50,7 @@ A future would not survive a cluster: the result may arrive at another node than
 | Package | Contents |
 |---|---|
 | `task` | Task, Attempt, statuses, results, Blob - pure types |
-| `queue` | `TaskQueue` port, `QueueSettings` |
+| `queue` | `TaskQueue` port (submit; `onResult` - `ResultCallback` for final results on the node where a task finished), `QueueSettings` |
 | `result` | `ResultStore` port |
 | `worker` | `Worker`, `AttemptCallback` |
 | `queue.memory` | `MemoryTaskQueue` - single-node queue; `Partition` - pure state machine of the tasks of one affinity key |

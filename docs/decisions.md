@@ -195,3 +195,30 @@ shutdown timeout of the handler, `DRAIN_TIMEOUT` + margin `< terminationGracePer
 - The pause comes from the port `DelayPolicy.after(key, result)`: fixed for now (`FixedDelay`, url-manager
   `crawl-delay: 1s`, including RETRY after a lost session); the result is passed so that the application can later
   take robots.txt and cooldown after 429 into account without changes of the library.
+
+## D22. RabbitMQ: two ways of handling requests, chosen by the acknowledgement
+
+- **Target - `url-manager.rabbit.ack: after-submit`** (`AckAfterSubmitRequests`): a request is acknowledged as soon
+  as its task is queued; the reply address (reply_to, correlation_id) travels in the task meta, and the reply is
+  sent by the result callback of the queue (`TaskQueue.onResult`) on the node where the task finished - any
+  url-manager, whether or not the one that took the request is alive. Needs a queue that keeps its tasks and
+  delivers results again until the reply is confirmed (Pekko); no timeout - the reply comes when the task finishes.
+- **Transitional - `after-reply`, the default** (`AckAfterReplyRequests`): for the in-memory queue. A request waits
+  for its page on the url-manager that took it and is acknowledged after its reply is confirmed by the broker
+  (publisher confirms); a stop of url-manager or an unconfirmed reply - the request is delivered again and fetched
+  again (at least once). The queues of instances are not shared, so the requests of a host must come to one
+  instance: a consistent-hash exchange of RabbitMQ by host (infrastructure, not code). The prefetch of the consumer
+  bounds the requests in work per instance, including those waiting for the crawl-delay of their host, so a hot host
+  can take all of it (known, no limit per host yet); the wait must stay below `consumer_timeout` of the broker.
+- Two implementations behind `FetchRequests`, chosen by a setting rather than by a property of the queue: the
+  behaviour depends on the infrastructure too (sharding by the exchange), and during the move both must run on the
+  same code; the transitional one is dropped as a whole later.
+- Typed protocol `crawler.urlmanager.v1` (module `url-manager-api`): `FetchRequest{request_id, url, timeout_ms}` ->
+  `FetchReply{request_id, page | refusal}`. The page body goes in the reply as is, up to the 100 MiB of the fetcher -
+  `max_message_size` of the broker must allow it (RabbitMQ 4: 16 MiB by default); the production url-manager already
+  passes such volumes through RabbitMQ.
+- The request id (client's `request_id`, else `message_id`) is the task id: a request delivered again while its task
+  is queued is not queued twice. A request without reply_to is acknowledged and dropped with a warning; a request
+  that is not `FetchRequest` or has a bad URL gets `CODE_INVALID`.
+- Spring AMQP of Spring Boot (`spring.rabbitmq.*`), manual acknowledgement on the channel of the delivery, from
+  virtual threads.

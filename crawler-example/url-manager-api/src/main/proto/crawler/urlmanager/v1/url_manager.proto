@@ -1,0 +1,56 @@
+// Client of url-manager over RabbitMQ: a fetch request to the queue of url-manager, the reply to reply_to.
+//
+// - Request: a message to the queue (url-manager.rabbit.queue), body - FetchRequest, content type
+//   application/x-protobuf. The reply goes to the queue in reply_to with the same correlation_id; a message without
+//   reply_to is acknowledged and dropped: there is nowhere to send the page.
+// - Reply: FetchReply - the page of the site (any HTTP status of the site, 404 included, is a page), or a refusal.
+// - At least once: url-manager acknowledges a request only after its reply is confirmed by the broker (the queue of
+//   tasks is in memory), so a request of a url-manager that stopped is delivered again and fetched again. A client
+//   may get a reply twice; request_id tells them apart.
+// - The body of a page is in the reply as is, up to the limit of the fetcher (100 MiB): max_message_size of the
+//   broker must allow it.
+syntax = "proto3";
+
+package crawler.urlmanager.v1;
+
+option java_multiple_files = true;
+option java_package = "io.github.deripas.crawler.urlmanager.v1";
+
+message FetchRequest {
+  // Identity of the request, chosen by the client; a request delivered again with the same id while it is
+  // still queued is not queued twice. Empty - the message_id of the AMQP message, or a new random id.
+  string request_id = 1;
+  string url = 2;           // absolute http(s) URL
+  int64 timeout_ms = 3;     // wait for the page; 0 - the default of url-manager, capped by its maximum
+}
+
+message FetchReply {
+  string request_id = 1;
+  oneof outcome {
+    Page page = 2;
+    Refusal refusal = 3;
+  }
+}
+
+message Page {
+  int32 status = 1;         // HTTP status of the site
+  repeated Header headers = 2;
+  bytes body = 3;
+}
+
+message Header {
+  string name = 1;
+  string value = 2;
+}
+
+message Refusal {
+  Code code = 1;
+  string message = 2;
+
+  enum Code {
+    CODE_UNSPECIFIED = 0;
+    CODE_INVALID = 1;       // the body is not FetchRequest, the URL is not an absolute http(s) URL
+    CODE_FAILED = 2;        // the site cannot be reached, the body is too large, attempts are exhausted
+    CODE_TIMEOUT = 3;       // no page within the timeout
+  }
+}

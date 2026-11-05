@@ -1,6 +1,7 @@
 package io.github.deripas.taskgrid.queue.memory;
 
 import io.github.deripas.taskgrid.queue.QueueSettings;
+import io.github.deripas.taskgrid.queue.ResultCallback;
 import io.github.deripas.taskgrid.queue.TaskQueue;
 import io.github.deripas.taskgrid.result.ResultStore;
 import io.github.deripas.taskgrid.task.Attempt;
@@ -14,10 +15,12 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
 
 /**
@@ -32,6 +35,7 @@ public final class MemoryTaskQueue implements TaskQueue, AttemptCallback {
     private final Worker worker;
     private final Map<String, Partition> partitions = new HashMap<>();
     private final Map<String, Queued> queuedById = new HashMap<>();
+    private final List<ResultCallback> callbacks = new CopyOnWriteArrayList<>();
 
     /**
      * @param worker creates the worker for this queue: the queue is the callback the worker reports results to
@@ -70,6 +74,14 @@ public final class MemoryTaskQueue implements TaskQueue, AttemptCallback {
             dropIfIdle(key, partition);
         }
         return CompletableFuture.completedFuture(null);
+    }
+
+    /**
+     * Each result is delivered once; a failed stage is logged, not repeated: the queue keeps nothing.
+     */
+    @Override
+    public void onResult(ResultCallback callback) {
+        callbacks.add(callback);
     }
 
     @Override
@@ -129,7 +141,25 @@ public final class MemoryTaskQueue implements TaskQueue, AttemptCallback {
                     log.error("Failed to store the result: task={}", result.taskId(), error);
                 }
             });
+            for (ResultCallback callback : callbacks) {
+                deliver(callback, result);
+            }
         }
+    }
+
+    private static void deliver(ResultCallback callback, TaskResult result) {
+        final CompletionStage<Void> delivered;
+        try {
+            delivered = callback.finished(result);
+        } catch (RuntimeException e) {
+            log.error("Result callback failed: task={}", result.taskId(), e);
+            return;
+        }
+        delivered.whenComplete((ignored, error) -> {
+            if (error != null) {
+                log.error("Result callback failed: task={}", result.taskId(), error);
+            }
+        });
     }
 
     /**

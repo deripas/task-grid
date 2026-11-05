@@ -17,4 +17,10 @@ public interface TaskQueue {
      * Completes when the queue has accepted the task.
      */
     CompletionStage<Void> submit(Task task);
+
+    /**
+     * Registers a receiver of the final results of all tasks, in addition to the result store. Register before
+     * submitting tasks; results finished earlier are not delivered.
+     */
+    void onResult(ResultCallback callback);
 }

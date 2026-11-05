@@ -14,6 +14,7 @@ import java.time.Duration;
  * @param crawlDelay      pause of a host after a result before its next fetch
  * @param resultTtl       how long a result nobody waits for is kept
  * @param shutdownTimeout wait for the gRPC server to terminate
+ * @param rabbit          requests over RabbitMQ
  */
 @ConfigurationProperties("url-manager")
 public record UrlManagerProperties(
@@ -24,7 +25,8 @@ public record UrlManagerProperties(
     Duration crawlDelay,
     Duration resultTtl,
     Duration shutdownTimeout,
-    Blob blob
+    Blob blob,
+    Rabbit rabbit
 ) {
     /**
      * S3 storage of large results, the one the sidecars of the fetcher write to.
@@ -41,6 +43,38 @@ public record UrlManagerProperties(
         public boolean configured() {
             return endpoint != null && !endpoint.isBlank();
         }
+    }
+
+    /**
+     * Request queue of RabbitMQ; the connection, prefetch and publisher confirms are {@code spring.rabbitmq.*}.
+     *
+     * @param enabled consume the queue; off - only {@code POST /fetch}
+     * @param queue   durable queue of requests, declared on start
+     * @param ack     when a request is acknowledged
+     */
+    public record Rabbit(
+        boolean enabled,
+        String queue,
+        Ack ack
+    ) {
+    }
+
+    /**
+     * When a request is acknowledged - which way of handling the queue gets.
+     */
+    public enum Ack {
+        /**
+         * After its reply is confirmed by the broker; the request waits for its page on the url-manager that took it.
+         * For the in-memory queue of tasks, until it is gone: a request of a stopped url-manager stays in RabbitMQ.
+         * The requests of a host must come to one url-manager (consistent-hash exchange by host).
+         */
+        AFTER_REPLY,
+
+        /**
+         * As soon as its task is queued; the reply is sent by the result callback of the queue, wherever the task
+         * finishes. The target way, for a queue that keeps its tasks; with the in-memory one a stop loses requests.
+         */
+        AFTER_SUBMIT
     }
 
     public UrlManagerProperties {

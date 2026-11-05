@@ -35,6 +35,14 @@
             <artifactId>fetcher-api</artifactId>
         </dependency>
         <dependency>
+            <groupId>io.github.deripas</groupId>
+            <artifactId>url-manager-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
+        <dependency>
             <groupId>io.grpc</groupId>
             <artifactId>grpc-netty-shaded</artifactId>
         </dependency>

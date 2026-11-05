@@ -16,6 +16,8 @@ import static com.tngtech.archunit.library.dependencies.SlicesRuleDefinition.sli
  *   app      UrlManagerApplication, UrlManagerConfiguration - assembly: Spring, task-grid node, adapters; nobody sees it
  *     ↓
  *   api      FetchController - inbound adapter: HTTP (Spring MVC) &lt;-&gt; fetch
+ *   amqp     FetchMessages, RabbitFetchListener - inbound adapter: RabbitMQ (Spring AMQP), url_manager.proto (v1,
+ *            from url-manager-api) &lt;-&gt; fetch; acknowledgement after the reply
  *   grpc     NodeServer - inbound adapter: gRPC server of the node for sidecars (NodeService of task-grid)
  *   fetcher  ProtoPageCodec - outbound adapter: fetcher.proto (from fetcher-api) implements the port PageCodec
  *   blob     S3BlobReader - outbound adapter: S3 (AWS SDK) and zstd implement the port BlobReader
@@ -37,6 +39,8 @@ class ArchitectureTest {
         .ensureAllClassesAreContainedInArchitecture()
         .layer("app").definedBy(BASE + ".app..")
         .layer("api").definedBy(BASE + ".api..")
+        .layer("amqp").definedBy(BASE + ".amqp..")
+        .layer("v1").definedBy(BASE + ".v1..")
         .layer("grpc").definedBy(BASE + ".grpc..")
         .layer("fetcher").definedBy(BASE + ".fetcher..")
         .layer("blob").definedBy(BASE + ".blob..")
@@ -44,11 +48,13 @@ class ArchitectureTest {
         .layer("fetch").definedBy(BASE + ".fetch..")
         .whereLayer("app").mayNotBeAccessedByAnyLayer()
         .whereLayer("api").mayOnlyBeAccessedByLayers("app")
+        .whereLayer("amqp").mayOnlyBeAccessedByLayers("app")
+        .whereLayer("v1").mayOnlyBeAccessedByLayers("amqp")
         .whereLayer("grpc").mayOnlyBeAccessedByLayers("app")
         .whereLayer("fetcher").mayOnlyBeAccessedByLayers("app")
         .whereLayer("blob").mayOnlyBeAccessedByLayers("app")
         .whereLayer("config").mayOnlyBeAccessedByLayers("app")
-        .whereLayer("fetch").mayOnlyBeAccessedByLayers("app", "api", "fetcher", "blob");
+        .whereLayer("fetch").mayOnlyBeAccessedByLayers("app", "api", "amqp", "fetcher", "blob");
 
     /**
      * Domain and use case: JDK, lombok, slf4j and the API of task-grid; neither protocols nor frameworks nor storage.
@@ -71,14 +77,32 @@ class ArchitectureTest {
             TASK_GRID + ".worker.delayed..");
 
     @ArchTest
-    static final ArchRule SPRING_ONLY_IN_APP_API_CONFIG_GRPC = noClasses()
+    static final ArchRule NO_SPRING_IN_DOMAIN_AND_OUTBOUND_ADAPTERS = noClasses()
         .that().resideInAnyPackage(BASE + ".fetch..", BASE + ".fetcher..", BASE + ".blob..")
         .should().dependOnClassesThat().resideInAnyPackage("org.springframework..", "jakarta..");
 
     @ArchTest
-    static final ArchRule PROTOCOLS_ONLY_IN_FETCHER_AND_GRPC = noClasses()
+    static final ArchRule FETCHER_PROTOCOL_ONLY_IN_FETCHER = noClasses()
+        .that().resideOutsideOfPackage(BASE + ".fetcher..")
+        .should().dependOnClassesThat().resideInAnyPackage("io.github.deripas.crawler.fetcher..");
+
+    @ArchTest
+    static final ArchRule GRPC_ONLY_IN_FETCHER_AND_GRPC = noClasses()
         .that().resideOutsideOfPackages(BASE + ".fetcher..", BASE + ".grpc..")
-        .should().dependOnClassesThat().resideInAnyPackage("io.grpc..", "com.google.protobuf..", "io.github.deripas.crawler.fetcher..");
+        .should().dependOnClassesThat().resideInAnyPackage("io.grpc..");
+
+    /**
+     * Generated classes of both protocols are protobuf; the fetch domain sees neither.
+     */
+    @ArchTest
+    static final ArchRule PROTOBUF_ONLY_IN_PROTOCOL_ADAPTERS = noClasses()
+        .that().resideOutsideOfPackages(BASE + ".fetcher..", BASE + ".grpc..", BASE + ".amqp..", BASE + ".v1..")
+        .should().dependOnClassesThat().resideInAnyPackage("com.google.protobuf..");
+
+    @ArchTest
+    static final ArchRule RABBIT_ONLY_IN_AMQP_AND_APP = noClasses()
+        .that().resideOutsideOfPackages(BASE + ".amqp..", BASE + ".app..")
+        .should().dependOnClassesThat().resideInAnyPackage("org.springframework.amqp..", "com.rabbitmq..");
 
     @ArchTest
     static final ArchRule STORAGE_ONLY_IN_BLOB_AND_APP = noClasses()

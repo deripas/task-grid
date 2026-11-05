@@ -6,13 +6,21 @@ import io.github.deripas.crawler.fetcher.grpc.FetcherService;
 import io.github.deripas.crawler.fetcher.http.ApacheFetcher;
 import io.github.deripas.crawler.urlmanager.api.FetchController;
 import io.github.deripas.crawler.urlmanager.app.UrlManagerApplication;
+import io.github.deripas.crawler.urlmanager.amqp.RabbitFetchListener;
 import io.github.deripas.crawler.urlmanager.grpc.NodeServer;
+import io.github.deripas.crawler.urlmanager.v1.FetchReply;
+import io.github.deripas.crawler.urlmanager.v1.FetchRequest;
+import io.github.deripas.crawler.urlmanager.v1.Refusal;
 import io.grpc.Grpc;
 import io.grpc.InsecureServerCredentials;
 import io.grpc.Server;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.springframework.amqp.core.Message;
+import org.springframework.amqp.core.MessageProperties;
+import org.springframework.amqp.rabbit.connection.CachingConnectionFactory;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.testcontainers.Testcontainers;
@@ -41,17 +49,20 @@ import static com.github.tomakehurst.wiremock.client.WireMock.get;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlPathMatching;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * End to end: client -> url-manager (this JVM: Spring application, in-memory task-grid node) -> handler-sidecar
  * (the real image) -> fetcher (this JVM) -> site (WireMock); pages above the inline limit of the sidecar go through
- * SeaweedFS. Needs Docker; run by {@code make it}.
+ * SeaweedFS. Requests come over HTTP and over RabbitMQ. Needs Docker; run by {@code make it}.
  */
 class UrlManagerIT {
     private static final Duration WAIT = Duration.ofSeconds(30);
     private static final int S3_PORT = 8333;
     private static final String BUCKET = "results";
+    private static final String REQUESTS = "url-manager.fetch";
+    private static final String SUBMIT_REQUESTS = "url-manager.fetch.after-submit";
     private static final Duration SLOW = Duration.ofMillis(300);
     private static final Duration CRAWL_DELAY = Duration.ofMillis(500);
     private static final ImageFromDockerfile SIDECAR_IMAGE = new ImageFromDockerfile("task-grid/handler-sidecar-it", false)
@@ -64,6 +75,9 @@ class UrlManagerIT {
     private static Server fetcherServer;
     private static Network network;
     private static GenericContainer<?> storage;
+    private static GenericContainer<?> rabbit;
+    private static CachingConnectionFactory client;
+    private static RabbitTemplate requests;
     private static ConfigurableApplicationContext urlManager;
     private static GenericContainer<?> sidecar;
     private static int httpPort;
@@ -89,38 +103,26 @@ class UrlManagerIT {
             .waitingFor(Wait.forListeningPorts(S3_PORT).withStartupTimeout(WAIT));
         storage.start();
         createBucket();
+        rabbit = new GenericContainer<>("rabbitmq:4.3-alpine")
+            .withExposedPorts(5672)
+            .waitingFor(Wait.forLogMessage(".*Server startup complete.*", 1).withStartupTimeout(WAIT));
+        rabbit.start();
 
-        urlManager = new SpringApplicationBuilder(UrlManagerApplication.class).run(
-            "--server.port=0",
-            "--url-manager.grpc-port=0",
-            "--url-manager.crawl-delay=" + CRAWL_DELAY.toMillis() + "ms",
-            "--url-manager.blob.endpoint=" + s3(""),
-            "--url-manager.blob.access-key=any",
-            "--url-manager.blob.secret-key=any");
+        urlManager = startUrlManager(REQUESTS, "after-reply");
         httpPort = urlManager.getEnvironment().getRequiredProperty("local.server.port", Integer.class);
-        final int nodePort = urlManager.getBean(NodeServer.class).port();
+        sidecar = startSidecar(urlManager, "fetcher-it");
 
-        Testcontainers.exposeHostPorts(nodePort, fetcherServer.getPort());
-        sidecar = new GenericContainer<>(SIDECAR_IMAGE)
-            .withNetwork(network)
-            .withEnv(Map.of(
-                "NODE_ADDRESS", "host.testcontainers.internal:" + nodePort,
-                "HANDLER_TARGET", "host.testcontainers.internal:" + fetcherServer.getPort(),
-                "HANDLER_METHOD", "/crawler.fetcher.v1.Fetcher/Fetch",
-                "WORKER_ID", "fetcher-it",
-                "KIND", "fetch",
-                "CAPACITY", "4",
-                "INLINE_MAX", String.valueOf(64 << 10),
-                "BLOB_S3_ENDPOINT", "seaweedfs:" + S3_PORT,
-                "BLOB_PREFIX", "it/"))
-            .waitingFor(Wait.forLogMessage(".*session open.*", 1).withStartupTimeout(WAIT));
-        sidecar.start();
+        client = new CachingConnectionFactory(rabbit.getHost(), rabbit.getMappedPort(5672));
+        requests = new RabbitTemplate(client);
+        requests.setReplyTimeout(WAIT.toMillis());
     }
 
     @AfterAll
     static void stop() throws IOException, InterruptedException {
+        client.destroy();
         sidecar.stop();
         urlManager.close();
+        rabbit.stop();
         fetcherServer.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
         calls.shutdownNow();
         fetcher.close();
@@ -211,6 +213,177 @@ class UrlManagerIT {
         final long other = started(served("/slow/other", "127.0.0.1").getFirst());
         final long last = started(local.getLast());
         assertTrue(other < last, "the other host waited for localhost");
+    }
+
+    @Test
+    void pageOverRabbit() throws Exception {
+        site.stubFor(get("/rabbit").willReturn(aResponse().withHeader("Content-Type", "text/html").withBody("<html>rabbit</html>")));
+
+        final FetchReply reply = rabbitFetch("r-1", "http://127.0.0.1:" + site.port() + "/rabbit");
+
+        assertEquals("r-1", reply.getRequestId());
+        assertEquals(200, reply.getPage().getStatus());
+        assertEquals("<html>rabbit</html>", reply.getPage().getBody().toStringUtf8());
+        assertTrue(reply.getPage().getHeadersList().stream().anyMatch(h -> h.getName().equalsIgnoreCase("Content-Type")));
+    }
+
+    /**
+     * Read from SeaweedFS and sent in the reply as is.
+     */
+    @Test
+    void largePageOverRabbit() throws Exception {
+        final String sitemap = sitemap(8 << 20);
+        site.stubFor(get("/rabbit/sitemap.xml").willReturn(aResponse().withBody(sitemap)));
+
+        final FetchReply reply = rabbitFetch("r-2", "http://127.0.0.1:" + site.port() + "/rabbit/sitemap.xml");
+
+        assertEquals(sitemap, reply.getPage().getBody().toStringUtf8());
+    }
+
+    /**
+     * The queue of tasks is in memory: the request stays unacknowledged in RabbitMQ until its reply is confirmed.
+     */
+    @Test
+    void requestIsAcknowledgedOnlyAfterTheReply() throws Exception {
+        site.stubFor(get("/rabbit/slow").willReturn(aResponse().withFixedDelay(1_500).withBody("slow")));
+
+        final CompletableFuture<FetchReply> reply = CompletableFuture.supplyAsync(() -> {
+            try {
+                return rabbitFetch("r-4", "http://127.0.0.1:" + site.port() + "/rabbit/slow");
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        }, calls);
+        final long deadline = System.nanoTime() + WAIT.toNanos();
+        while (unacknowledged() == 0 && !reply.isDone() && System.nanoTime() < deadline) {
+            Thread.sleep(50);
+        }
+        assertEquals(1, unacknowledged(), "request in work is not held by the broker");
+
+        assertEquals("slow", reply.get(WAIT.toSeconds(), TimeUnit.SECONDS).getPage().getBody().toStringUtf8());
+        while (unacknowledged() != 0 && System.nanoTime() < deadline) {
+            Thread.sleep(50);
+        }
+        assertEquals(0, unacknowledged());
+    }
+
+    @Test
+    void badUrlOverRabbitIsRefused() throws Exception {
+        final FetchReply reply = rabbitFetch("r-3", "ftp://example.com/");
+
+        assertEquals(Refusal.Code.CODE_INVALID, reply.getRefusal().getCode());
+    }
+
+    /**
+     * The target way on a url-manager of its own (queue {@value #SUBMIT_REQUESTS}, its own sidecar): the request is
+     * acknowledged while its page is still fetched, the reply comes from the result callback.
+     */
+    @Test
+    void ackAfterSubmitRepliesFromTheResultCallback() throws Exception {
+        site.stubFor(get("/rabbit/submit").willReturn(aResponse().withFixedDelay(1_500).withBody("submitted")));
+        try (ConfigurableApplicationContext target = startUrlManager(SUBMIT_REQUESTS, "after-submit")) {
+            final GenericContainer<?> targetSidecar = startSidecar(target, "fetcher-it-submit");
+            try {
+                final CompletableFuture<FetchReply> reply = CompletableFuture.supplyAsync(() -> {
+                    try {
+                        return rabbitFetch(SUBMIT_REQUESTS, "r-5", "http://127.0.0.1:" + site.port() + "/rabbit/submit");
+                    } catch (Exception e) {
+                        throw new IllegalStateException(e);
+                    }
+                }, calls);
+                final long deadline = System.nanoTime() + WAIT.toNanos();
+                while (site.getAllServeEvents().stream().noneMatch(e -> e.getRequest().getUrl().equals("/rabbit/submit"))
+                    && System.nanoTime() < deadline) {
+                    Thread.sleep(50);
+                }
+                assertFalse(reply.isDone(), "the page is still fetched");
+                assertEquals(0, unacknowledged(SUBMIT_REQUESTS), "the request is acknowledged once queued");
+
+                final FetchReply page = reply.get(WAIT.toSeconds(), TimeUnit.SECONDS);
+                assertEquals("r-5", page.getRequestId());
+                assertEquals("submitted", page.getPage().getBody().toStringUtf8());
+            } finally {
+                targetSidecar.stop();
+            }
+        }
+    }
+
+    /**
+     * url-manager of this JVM on the shared site, storage and broker; nodePort and httpPort - any free ones.
+     */
+    private static ConfigurableApplicationContext startUrlManager(String queue, String ack) {
+        return new SpringApplicationBuilder(UrlManagerApplication.class).run(
+            "--server.port=0",
+            "--url-manager.grpc-port=0",
+            "--url-manager.crawl-delay=" + CRAWL_DELAY.toMillis() + "ms",
+            "--url-manager.blob.endpoint=" + s3(""),
+            "--url-manager.blob.access-key=any",
+            "--url-manager.blob.secret-key=any",
+            "--url-manager.rabbit.enabled=true",
+            "--url-manager.rabbit.queue=" + queue,
+            "--url-manager.rabbit.ack=" + ack,
+            "--spring.rabbitmq.host=" + rabbit.getHost(),
+            "--spring.rabbitmq.port=" + rabbit.getMappedPort(5672));
+    }
+
+    /**
+     * The real sidecar in front of the fetcher of this JVM, connected to the node of the url-manager.
+     */
+    private static GenericContainer<?> startSidecar(ConfigurableApplicationContext node, String workerId) {
+        final int nodePort = node.getBean(NodeServer.class).port();
+        Testcontainers.exposeHostPorts(nodePort, fetcherServer.getPort());
+        final GenericContainer<?> container = new GenericContainer<>(SIDECAR_IMAGE)
+            .withNetwork(network)
+            .withEnv(Map.of(
+                "NODE_ADDRESS", "host.testcontainers.internal:" + nodePort,
+                "HANDLER_TARGET", "host.testcontainers.internal:" + fetcherServer.getPort(),
+                "HANDLER_METHOD", "/crawler.fetcher.v1.Fetcher/Fetch",
+                "WORKER_ID", workerId,
+                "KIND", "fetch",
+                "CAPACITY", "4",
+                "INLINE_MAX", String.valueOf(64 << 10),
+                "BLOB_S3_ENDPOINT", "seaweedfs:" + S3_PORT,
+                "BLOB_PREFIX", "it/"))
+            .waitingFor(Wait.forLogMessage(".*session open.*", 1).withStartupTimeout(WAIT));
+        container.start();
+        return container;
+    }
+
+    private static FetchReply rabbitFetch(String id, String url) throws Exception {
+        return rabbitFetch(REQUESTS, id, url);
+    }
+
+    /**
+     * Request and reply as a client sends them: the reply comes to the direct reply-to of the template.
+     */
+    private static FetchReply rabbitFetch(
+        String queue,
+        String id,
+        String url
+    ) throws Exception {
+        final MessageProperties properties = new MessageProperties();
+        properties.setContentType(RabbitFetchListener.CONTENT_TYPE);
+        final byte[] body = FetchRequest.newBuilder().setRequestId(id).setUrl(url).build().toByteArray();
+        final Message reply = requests.sendAndReceive("", queue, new Message(body, properties));
+        assertTrue(reply != null, "no reply within " + WAIT);
+        return FetchReply.parseFrom(reply.getBody());
+    }
+
+    /**
+     * Unacknowledged messages of the request queue, as the broker counts them.
+     */
+    private static int unacknowledged() throws IOException, InterruptedException {
+        return unacknowledged(REQUESTS);
+    }
+
+    private static int unacknowledged(String queue) throws IOException, InterruptedException {
+        final String out = rabbit.execInContainer("rabbitmqctl", "list_queues", "-q", "name", "messages_unacknowledged").getStdout();
+        return out.lines()
+            .map(line -> line.trim().split("\\s+"))
+            .filter(columns -> columns.length == 2 && columns[0].equals(queue))
+            .mapToInt(columns -> Integer.parseInt(columns[1]))
+            .findFirst()
+            .orElse(0);
     }
 
     private static HttpResponse<String> fetch(String url) throws IOException, InterruptedException {

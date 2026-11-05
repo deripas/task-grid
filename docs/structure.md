@@ -17,8 +17,9 @@ starters/                  Spring Boot starters over libs/ (not necessarily one 
 crawler-example/           crawler built on task-grid; imports the Spring Boot BOM
   fetcher-api/             fetcher.proto - handler protocol shared by fetcher and url-manager
   fetcher/                 handler: plain Java gRPC server over Apache HttpClient, runs behind handler-sidecar
-  url-manager/             Spring Boot application: POST /fetch on an in-memory task-grid node, remote worker of the
-                           fetch kind, large pages read from S3
+  url-manager-api/         url_manager.proto - client protocol of url-manager over RabbitMQ (messages only)
+  url-manager/             Spring Boot application: POST /fetch and a RabbitMQ queue with reply_to on an in-memory
+                           task-grid node, crawl-delay, remote worker of the fetch kind, large pages read from S3
 docs/                      project documents
 .local/                    working notes and scratch files, not in git
 ```

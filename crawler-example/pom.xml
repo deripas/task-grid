@@ -21,6 +21,7 @@
     <modules>
         <module>fetcher-api</module>
         <module>fetcher</module>
+        <module>url-manager-api</module>
         <module>url-manager</module>
     </modules>
 
@@ -34,6 +35,11 @@
             <dependency>
                 <groupId>io.github.deripas</groupId>
                 <artifactId>fetcher-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.deripas</groupId>
+                <artifactId>url-manager-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
