@@ -7,6 +7,7 @@ import io.github.deripas.taskgrid.task.Blob;
 import io.github.deripas.taskgrid.task.Task;
 import io.github.deripas.taskgrid.worker.Assignment;
 import io.github.deripas.taskgrid.worker.Worker;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -27,7 +28,12 @@ class LocalWorkerTest {
         "flaky", attempt -> {
             throw new RetryableException("connection reset");
         });
-    private final LocalWorker worker = new LocalWorker(handlers, Runnable::run, results::add);
+    private final LocalWorker worker = new LocalWorker(handlers, Runnable::run);
+
+    @BeforeEach
+    void subscribe() {
+        worker.onComplete(results::add);
+    }
 
     @Test
     void returnedBodyIsDone() {
@@ -62,7 +68,7 @@ class LocalWorkerTest {
     void rejectsWhenTheExecutorRefuses() {
         final LocalWorker refusing = new LocalWorker(handlers, command -> {
             throw new RejectedExecutionException("shut down");
-        }, results::add);
+        });
         assertEquals(new Assignment.Rejected("executor rejected the attempt: shut down"),
             refusing.assign(attempt("echo")).toCompletableFuture().join());
     }

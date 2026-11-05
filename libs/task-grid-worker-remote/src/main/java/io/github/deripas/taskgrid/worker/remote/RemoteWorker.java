@@ -10,10 +10,12 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.time.Clock;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
@@ -24,24 +26,22 @@ import java.util.concurrent.TimeUnit;
  * <p>
  * Engine of the {@link Allocator}s (one per kind) for a single node: all events run one by one on a single thread,
  * plus a periodic tick. Results of attempts and retries of the attempts of closed sessions are reported to the
- * callback from that thread. A transport adapter connects sidecars through {@link Sidecars}.
+ * callbacks from that thread. A transport adapter connects sidecars through {@link Sidecars}.
+ * <p>
+ * {@link #load} by kind is refreshed on each tick: the metrics of the pools.
  */
 @Slf4j
 public final class RemoteWorker implements Worker, Sidecars, AutoCloseable {
     private final RemoteSettings settings;
-    private final AttemptCallback callback;
     private final Clock clock;
     private final ScheduledExecutorService engine;
+    private final List<AttemptCallback> callbacks = new CopyOnWriteArrayList<>();
     // engine thread only
     private final Map<String, Allocator> allocators = new HashMap<>();
+    private volatile Map<String, Load> load = Map.of();
 
-    public RemoteWorker(
-        RemoteSettings settings,
-        AttemptCallback callback,
-        Clock clock
-    ) {
+    public RemoteWorker(RemoteSettings settings, Clock clock) {
         this.settings = settings;
-        this.callback = callback;
         this.clock = clock;
         this.engine = Executors.newSingleThreadScheduledExecutor(Thread.ofPlatform().name("remote-worker").daemon().factory());
         final long tick = settings.tick().toNanos();
@@ -62,6 +62,21 @@ public final class RemoteWorker implements Worker, Sidecars, AutoCloseable {
             reply.complete(new Assignment.Rejected("node stopping"));
         }
         return reply;
+    }
+
+    /**
+     * Results are reported on the engine thread.
+     */
+    @Override
+    public void onComplete(AttemptCallback callback) {
+        callbacks.add(callback);
+    }
+
+    /**
+     * Load by kind as of the last tick: kinds that ever had sessions or attempts on this node.
+     */
+    public Map<String, Load> load() {
+        return load;
     }
 
     @Override
@@ -97,7 +112,7 @@ public final class RemoteWorker implements Worker, Sidecars, AutoCloseable {
     public void complete(String workerId, AttemptResult result) {
         final boolean posted = post(() -> {
             allocators.values().forEach(a -> a.completed(workerId, result.taskId(), result.attempt()));
-            callback.complete(result);
+            report(result);
         });
         if (!posted) {
             log.debug("Ignoring a result after stop: worker={} task={}", workerId, result.taskId());
@@ -125,10 +140,26 @@ public final class RemoteWorker implements Worker, Sidecars, AutoCloseable {
     private void tick() {
         final long now = now();
         allocators.values().forEach(a -> a.tick(now));
+        final Map<String, Load> snapshot = new HashMap<>();
+        allocators.forEach((kind, allocator) -> snapshot.put(kind, allocator.load()));
+        load = Map.copyOf(snapshot);
     }
 
     private Allocator allocator(String kind) {
-        return allocators.computeIfAbsent(kind, k -> new Allocator(k, settings, callback));
+        return allocators.computeIfAbsent(kind, k -> new Allocator(k, settings, this::report));
+    }
+
+    /**
+     * Engine thread.
+     */
+    private void report(AttemptResult result) {
+        for (AttemptCallback callback : callbacks) {
+            try {
+                callback.complete(result);
+            } catch (RuntimeException e) {
+                log.error("Attempt callback failed: task={} attempt={}", result.taskId(), result.attempt(), e);
+            }
+        }
     }
 
     /**

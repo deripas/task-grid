@@ -12,12 +12,13 @@ import io.github.deripas.crawler.urlmanager.fetch.BlobReader;
 import io.github.deripas.crawler.urlmanager.fetch.FetchService;
 import io.github.deripas.crawler.urlmanager.fetcher.ProtoPageCodec;
 import io.github.deripas.crawler.urlmanager.grpc.NodeServer;
+import io.github.deripas.crawler.urlmanager.metrics.PoolMetrics;
+import io.github.deripas.taskgrid.dispatch.Dispatcher;
+import io.github.deripas.taskgrid.queue.DelayPolicy;
 import io.github.deripas.taskgrid.queue.QueueSettings;
 import io.github.deripas.taskgrid.queue.memory.MemoryTaskQueue;
 import io.github.deripas.taskgrid.result.ResultStore;
 import io.github.deripas.taskgrid.result.memory.MemoryResultStore;
-import io.github.deripas.taskgrid.worker.delayed.DelayedWorker;
-import io.github.deripas.taskgrid.worker.delayed.FixedDelay;
 import io.github.deripas.taskgrid.worker.remote.RemoteSettings;
 import io.github.deripas.taskgrid.worker.remote.RemoteWorker;
 import io.github.deripas.taskgrid.worker.remote.grpc.NodeService;
@@ -31,6 +32,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnBooleanProp
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.annotation.EnableScheduling;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
@@ -46,11 +48,12 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Assembly: settings -> task-grid node (queue, results, crawl-delay, remote worker, gRPC server) -> adapters -> fetch
- * -> API (HTTP; RabbitMQ when {@code url-manager.rabbit.enabled}).
+ * Assembly: settings -> task-grid node (queue with crawl-delay, results, dispatcher, remote worker, gRPC server, pool
+ * metrics) -> adapters -> fetch -> API (HTTP; RabbitMQ when {@code url-manager.rabbit.enabled}).
  */
 @Configuration(proxyBeanMethods = false)
 @EnableConfigurationProperties(UrlManagerProperties.class)
+@EnableScheduling
 public class UrlManagerConfiguration {
     @Bean
     ResultStore results(UrlManagerProperties properties) {
@@ -59,16 +62,16 @@ public class UrlManagerConfiguration {
 
     @Bean
     Node node(UrlManagerProperties properties, ResultStore results) {
-        final DelayedWorker[] delayed = new DelayedWorker[1];
-        final RemoteWorker[] remote = new RemoteWorker[1];
-        final MemoryTaskQueue queue = new MemoryTaskQueue(new QueueSettings(properties.maxAttempts()), results, callback -> {
-            delayed[0] = new DelayedWorker(new FixedDelay(properties.crawlDelay()), callback, inner -> {
-                remote[0] = new RemoteWorker(RemoteSettings.DEFAULTS, inner, Clock.systemUTC());
-                return remote[0];
-            });
-            return delayed[0];
-        });
-        return new Node(queue, delayed[0], remote[0]);
+        final MemoryTaskQueue queue = new MemoryTaskQueue(new QueueSettings(properties.maxAttempts()),
+            DelayPolicy.fixed(properties.crawlDelay()), results);
+        final RemoteWorker remote = new RemoteWorker(RemoteSettings.DEFAULTS, Clock.systemUTC());
+        Dispatcher.connect(queue, remote);
+        return new Node(queue, remote);
+    }
+
+    @Bean
+    PoolMetrics poolMetrics(Node node) {
+        return new PoolMetrics(node.remote());
     }
 
     @Bean

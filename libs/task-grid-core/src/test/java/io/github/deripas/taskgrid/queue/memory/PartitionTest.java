@@ -1,5 +1,6 @@
 package io.github.deripas.taskgrid.queue.memory;
 
+import io.github.deripas.taskgrid.queue.DelayPolicy;
 import io.github.deripas.taskgrid.queue.QueueSettings;
 import io.github.deripas.taskgrid.queue.TaskQueue;
 import io.github.deripas.taskgrid.task.Attempt;
@@ -8,20 +9,23 @@ import io.github.deripas.taskgrid.task.Blob;
 import io.github.deripas.taskgrid.task.Task;
 import io.github.deripas.taskgrid.task.TaskResult;
 import io.github.deripas.taskgrid.task.TaskStatus;
-import io.github.deripas.taskgrid.worker.Assignment;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PartitionTest {
+    private static final Duration PAUSE = Duration.ofSeconds(1);
+
     private final Recorder out = new Recorder();
-    private final Partition partition = new Partition(new QueueSettings(3), out);
+    private final Partition partition = new Partition("a.com", new QueueSettings(3), DelayPolicy.NONE, out);
 
     @Test
     void runsTasksOneAtATimeInOrder() {
@@ -65,14 +69,76 @@ class PartitionTest {
     }
 
     @Test
-    void rejectedAssignmentFailsTheTaskAndStartsTheNext() {
-        partition.submit(task("a"));
-        partition.submit(task("b"));
-        partition.assigned(out.attempts.getFirst(), new Assignment.Rejected("no handler"));
+    void nextTaskWaitsForThePauseAfterTheResult() {
+        final Partition paused = new Partition("a.com", new QueueSettings(3), DelayPolicy.fixed(PAUSE), out);
+        paused.submit(task("a"));
+        paused.submit(task("b"));
+        paused.completed(AttemptResult.done(out.attempts.getFirst(), Blob.of(new byte[0])));
 
-        assertEquals(TaskStatus.FAILED, out.results.getFirst().status());
-        assertEquals("rejected: no handler", out.results.getFirst().error());
+        assertEquals(List.of("a#1"), out.assigned());
+        assertEquals(List.of(PAUSE), out.pauses);
+        assertEquals("a", out.results.getFirst().taskId());
+        assertFalse(paused.isIdle());
+
+        paused.resume();
         assertEquals(List.of("a#1", "b#1"), out.assigned());
+    }
+
+    @Test
+    void retryWaitsForThePauseToo() {
+        final Partition paused = new Partition("a.com", new QueueSettings(3), DelayPolicy.fixed(PAUSE), out);
+        paused.submit(task("a"));
+        paused.completed(AttemptResult.retry(out.attempts.getFirst(), "busy"));
+        assertEquals(List.of("a#1"), out.assigned());
+
+        paused.resume();
+        assertEquals(List.of("a#1", "a#2"), out.assigned());
+    }
+
+    /**
+     * The pause holds the partition even when it has nothing to do: a task of the key submitted during the pause waits.
+     */
+    @Test
+    void pauseOutlivesTheLastTask() {
+        final Partition paused = new Partition("a.com", new QueueSettings(3), DelayPolicy.fixed(PAUSE), out);
+        paused.submit(task("a"));
+        paused.completed(AttemptResult.failed(out.attempts.getFirst(), "bad url"));
+        assertFalse(paused.isIdle());
+
+        paused.submit(task("b"));
+        assertEquals(List.of("a#1"), out.assigned());
+
+        paused.resume();
+        assertEquals(List.of("a#1", "b#1"), out.assigned());
+        paused.completed(AttemptResult.done(out.attempts.get(1), Blob.of(new byte[0])));
+        paused.resume();
+        assertTrue(paused.isIdle());
+    }
+
+    @Test
+    void independentTaskHasNoPause() {
+        final Partition independent = new Partition(null, new QueueSettings(3), DelayPolicy.fixed(PAUSE), out);
+        independent.submit(task("a"));
+        independent.completed(AttemptResult.done(out.attempts.getFirst(), Blob.of(new byte[0])));
+
+        assertEquals(List.of(), out.pauses);
+        assertTrue(independent.isIdle());
+    }
+
+    /**
+     * A task submitted by a result callback does not start a second attempt next to the one the partition starts.
+     */
+    @Test
+    void taskSubmittedFromTheResultRunsInOrder() {
+        final Recorder reentrant = new Recorder();
+        final Partition[] self = new Partition[1];
+        reentrant.onFinished = result -> self[0].submit(task("c"));
+        self[0] = new Partition("a.com", new QueueSettings(3), DelayPolicy.NONE, reentrant);
+        self[0].submit(task("a"));
+        self[0].submit(task("b"));
+        self[0].completed(AttemptResult.done(reentrant.attempts.getFirst(), Blob.of(new byte[0])));
+
+        assertEquals(List.of("a#1", "b#1"), reentrant.assigned());
     }
 
     @Test
@@ -104,6 +170,9 @@ class PartitionTest {
     private static final class Recorder implements Partition.Output {
         private final List<Attempt> attempts = new ArrayList<>();
         private final List<TaskResult> results = new ArrayList<>();
+        private final List<Duration> pauses = new ArrayList<>();
+        private Consumer<TaskResult> onFinished = result -> {
+        };
 
         @Override
         public void assign(Attempt attempt) {
@@ -113,6 +182,12 @@ class PartitionTest {
         @Override
         public void finished(TaskResult result) {
             results.add(result);
+            onFinished.accept(result);
+        }
+
+        @Override
+        public void resumeAfter(Duration delay) {
+            pauses.add(delay);
         }
 
         private List<String> assigned() {

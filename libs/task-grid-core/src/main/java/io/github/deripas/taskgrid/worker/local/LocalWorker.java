@@ -7,9 +7,11 @@ import io.github.deripas.taskgrid.worker.AttemptCallback;
 import io.github.deripas.taskgrid.worker.Worker;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 
@@ -21,19 +23,14 @@ import java.util.concurrent.RejectedExecutionException;
 public final class LocalWorker implements Worker {
     private final Map<String, Handler> handlers;
     private final Executor executor;
-    private final AttemptCallback callback;
+    private final List<AttemptCallback> callbacks = new CopyOnWriteArrayList<>();
 
     /**
      * @param handlers by kind
      */
-    public LocalWorker(
-        Map<String, Handler> handlers,
-        Executor executor,
-        AttemptCallback callback
-    ) {
+    public LocalWorker(Map<String, Handler> handlers, Executor executor) {
         this.handlers = Map.copyOf(handlers);
         this.executor = executor;
-        this.callback = callback;
     }
 
     @Override
@@ -47,11 +44,29 @@ public final class LocalWorker implements Worker {
             return rejected("no handler for " + KIND + " " + kind);
         }
         try {
-            executor.execute(() -> callback.complete(execute(handler, attempt)));
+            executor.execute(() -> report(execute(handler, attempt)));
         } catch (RejectedExecutionException e) {
             return rejected("executor rejected the attempt: " + e.getMessage());
         }
         return CompletableFuture.completedFuture(new Assignment.Accepted());
+    }
+
+    /**
+     * Results are reported on the thread of the executor that ran the handler.
+     */
+    @Override
+    public void onComplete(AttemptCallback callback) {
+        callbacks.add(callback);
+    }
+
+    private void report(AttemptResult result) {
+        for (AttemptCallback callback : callbacks) {
+            try {
+                callback.complete(result);
+            } catch (RuntimeException e) {
+                log.error("Attempt callback failed: task={} attempt={}", result.taskId(), result.attempt(), e);
+            }
+        }
     }
 
     private static AttemptResult execute(Handler handler, Attempt attempt) {

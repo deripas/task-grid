@@ -1,5 +1,7 @@
 package io.github.deripas.taskgrid;
 
+import io.github.deripas.taskgrid.dispatch.Dispatcher;
+import io.github.deripas.taskgrid.queue.DelayPolicy;
 import io.github.deripas.taskgrid.queue.QueueSettings;
 import io.github.deripas.taskgrid.queue.TaskQueue;
 import io.github.deripas.taskgrid.queue.memory.MemoryTaskQueue;
@@ -15,6 +17,7 @@ import io.github.deripas.taskgrid.worker.local.Handler;
 import io.github.deripas.taskgrid.worker.local.LocalWorker;
 import io.github.deripas.taskgrid.worker.local.RetryableException;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -35,7 +38,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * The whole flow in one JVM from in-memory implementations: queue, in-process worker, result store, handlers.
+ * The whole flow in one JVM from in-memory implementations: queue, dispatcher, in-process worker, result store, handlers.
  */
 class LocalNodeTest {
     private static final Duration WAIT = Duration.ofSeconds(10);
@@ -57,12 +60,17 @@ class LocalNodeTest {
             }
             return attempt.task().payload();
         });
-    private final TaskQueue queue = new MemoryTaskQueue(new QueueSettings(3), results,
-        callback -> new LocalWorker(handlers, executor, callback));
+    private final MemoryTaskQueue queue = new MemoryTaskQueue(new QueueSettings(3), DelayPolicy.NONE, results);
+
+    @BeforeEach
+    void connect() {
+        Dispatcher.connect(queue, new LocalWorker(handlers, executor));
+    }
 
     @AfterEach
     void stop() {
         executor.close();
+        queue.close();
     }
 
     @Test
@@ -88,7 +96,7 @@ class LocalNodeTest {
     }
 
     @Test
-    void tasksWithoutAffinityKeyRunInParallel() {
+    void tasksWithoutPartitionKeyRunInParallel() {
         for (int i = 0; i < 50; i++) {
             submit("task-" + i, Map.of(Worker.KIND, "echo"));
         }

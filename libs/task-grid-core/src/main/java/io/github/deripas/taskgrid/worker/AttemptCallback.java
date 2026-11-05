@@ -3,7 +3,8 @@ package io.github.deripas.taskgrid.worker;
 import io.github.deripas.taskgrid.task.AttemptResult;
 
 /**
- * What a worker reports to the owner of attempts (the queue). Implemented by the queue, called by the worker.
+ * Receives the results of the attempts a worker accepted ({@link Worker#onComplete}); usually the queue that owns them.
+ * Called on a thread of the worker: must not block.
  */
 public interface AttemptCallback {
     /**

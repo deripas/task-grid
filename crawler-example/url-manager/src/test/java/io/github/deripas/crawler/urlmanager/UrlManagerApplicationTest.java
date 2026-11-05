@@ -10,6 +10,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -34,6 +35,35 @@ class UrlManagerApplicationTest {
 
             assertEquals(400, response.statusCode(), response.body());
             assertTrue(response.headers().firstValue("Content-Type").orElseThrow().startsWith("application/problem+json"));
+        }
+    }
+
+    /**
+     * No sidecar of the fetch kind: the attempt waits for a free slot, and the metric shows it.
+     */
+    @Test
+    void attemptWaitingForAHandlerIsInTheMetrics() throws Exception {
+        try (ConfigurableApplicationContext context = new SpringApplicationBuilder(UrlManagerApplication.class)
+            .run("--server.port=0", "--url-manager.grpc-port=0")) {
+            final int port = context.getEnvironment().getRequiredProperty("local.server.port", Integer.class);
+            final HttpClient client = HttpClient.newHttpClient();
+            final HttpRequest fetch = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/fetch"))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"url\": \"http://example.com/\", \"timeoutMs\": 100}"))
+                .build();
+            assertEquals(504, client.send(fetch, HttpResponse.BodyHandlers.ofString()).statusCode());
+
+            final HttpRequest scrape = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/actuator/prometheus")).build();
+            final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            String metrics;
+            do {
+                Thread.sleep(100);
+                metrics = client.send(scrape, HttpResponse.BodyHandlers.ofString()).body();
+                // the three gauges of a new kind are registered one after another: wait for the last one
+            } while (!metrics.contains("task_grid_worker_capacity{kind=\"fetch\"}") && System.nanoTime() < deadline);
+
+            assertTrue(metrics.contains("task_grid_worker_waiting{kind=\"fetch\"} 1.0"), metrics);
+            assertTrue(metrics.contains("task_grid_worker_capacity{kind=\"fetch\"} 0.0"), metrics);
         }
     }
 }

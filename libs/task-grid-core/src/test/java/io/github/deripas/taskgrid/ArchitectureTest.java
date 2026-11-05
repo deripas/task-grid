@@ -13,14 +13,17 @@ import static com.tngtech.archunit.library.dependencies.SlicesRuleDefinition.sli
  * Architecture rules of task-grid-core, checked by the regular build ({@code make verify}).
  * <pre>
  *   queue.memory   result.memory   worker.local     implementations: see only ports, nobody sees them
- *         ↓               ↓              ↓          (queue.memory: Partition state machine; worker.local: Handler)
- *   queue          TaskQueue, QueueSettings
- *         ↓                    ↓
- *   worker         Worker, AttemptCallback       result   ResultStore
- *         ↓                    ↓
- *   task           Task, Attempt, statuses, results, Blob - pure types
+ *                                                   (queue.memory: Partition state machine; worker.local: Handler)
+ *   dispatch       Dispatcher - connects a queue to a worker through their ports, nobody sees it
+ *
+ *   queue    TaskQueue, DelayPolicy, callbacks      worker   Worker, AttemptCallback, Assignment
+ *     ↓
+ *   result   ResultStore
+ *
+ *   task     Task, Attempt, statuses, results, Blob - pure types, seen by all
  * </pre>
- * worker and result do not know each other. Implementations are wired together by the application (or a test).
+ * queue and worker do not know each other: only dispatch sees both. Implementations are wired together by
+ * the application (or a test).
  * A rule gets in the way - change it here explicitly, with a reason next to it; do not work around it.
  */
 @AnalyzeClasses(packages = "io.github.deripas.taskgrid", importOptions = ImportOption.DoNotIncludeTests.class)
@@ -35,17 +38,19 @@ class ArchitectureTest {
         .layer("worker").definedBy(BASE + ".worker")
         .layer("result").definedBy(BASE + ".result")
         .layer("queue").definedBy(BASE + ".queue")
+        .layer("dispatch").definedBy(BASE + ".dispatch..")
         .layer("worker.local").definedBy(BASE + ".worker.local..")
         .layer("result.memory").definedBy(BASE + ".result.memory..")
         .layer("queue.memory").definedBy(BASE + ".queue.memory..")
         .whereLayer("queue.memory").mayNotBeAccessedByAnyLayer()
         .whereLayer("result.memory").mayNotBeAccessedByAnyLayer()
         .whereLayer("worker.local").mayNotBeAccessedByAnyLayer()
-        .whereLayer("queue").mayOnlyBeAccessedByLayers("queue.memory")
+        .whereLayer("dispatch").mayNotBeAccessedByAnyLayer()
+        .whereLayer("queue").mayOnlyBeAccessedByLayers("queue.memory", "dispatch")
         .whereLayer("result").mayOnlyBeAccessedByLayers("queue", "queue.memory", "result.memory")
-        .whereLayer("worker").mayOnlyBeAccessedByLayers("queue", "queue.memory", "worker.local")
+        .whereLayer("worker").mayOnlyBeAccessedByLayers("worker.local", "dispatch")
         .whereLayer("task").mayOnlyBeAccessedByLayers(
-            "queue", "worker", "result", "queue.memory", "result.memory", "worker.local");
+            "queue", "worker", "result", "dispatch", "queue.memory", "result.memory", "worker.local");
 
     /**
      * Core is reusable in any environment: the JDK plus a short, explicit list of libraries.

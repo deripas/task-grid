@@ -20,7 +20,7 @@ import static com.tngtech.archunit.library.dependencies.SlicesRuleDefinition.sli
  *     ↓
  *   core     task, worker of task-grid-core (not queue, not result)
  * </pre>
- * The application wires RemoteWorker into a queue and registers NodeService in its gRPC server.
+ * The application connects RemoteWorker to a queue (Dispatcher of the core) and registers NodeService in its gRPC server.
  * A rule gets in the way - change it here explicitly, with a reason next to it; do not work around it.
  */
 @AnalyzeClasses(packages = ArchitectureTest.BASE, importOptions = ImportOption.DoNotIncludeTests.class)

@@ -1,6 +1,8 @@
 package io.github.deripas.taskgrid.worker.remote.grpc;
 
 import com.github.luben.zstd.Zstd;
+import io.github.deripas.taskgrid.dispatch.Dispatcher;
+import io.github.deripas.taskgrid.queue.DelayPolicy;
 import io.github.deripas.taskgrid.queue.QueueSettings;
 import io.github.deripas.taskgrid.queue.TaskQueue;
 import io.github.deripas.taskgrid.queue.memory.MemoryTaskQueue;
@@ -65,7 +67,7 @@ class SidecarCompatibilityIT {
 
     private final ResultStore results = new MemoryResultStore(Duration.ofMinutes(1), Clock.systemUTC());
     private RemoteWorker worker;
-    private TaskQueue queue;
+    private MemoryTaskQueue queue;
     private Server node;
     private TestHandler handler;
     private GenericContainer<?> sidecar;
@@ -91,11 +93,9 @@ class SidecarCompatibilityIT {
 
     @BeforeEach
     void start() throws IOException {
-
-        queue = new MemoryTaskQueue(new QueueSettings(3), results, callback -> {
-            worker = new RemoteWorker(RemoteSettings.DEFAULTS, callback, Clock.systemUTC());
-            return worker;
-        });
+        queue = new MemoryTaskQueue(new QueueSettings(3), DelayPolicy.NONE, results);
+        worker = new RemoteWorker(RemoteSettings.DEFAULTS, Clock.systemUTC());
+        Dispatcher.connect(queue, worker);
         node = Grpc.newServerBuilderForPort(0, InsecureServerCredentials.create())
             .addService(new NodeService(worker))
             .build()
@@ -125,6 +125,7 @@ class SidecarCompatibilityIT {
         handler.close();
         node.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
         worker.close();
+        queue.close();
     }
 
     @Test

@@ -225,13 +225,34 @@ class AllocatorTest {
         assertInstanceOf(Assignment.Rejected.class, assign(null).join());
     }
 
+    /**
+     * No sidecar of the kind for too long: the attempt counts as a technical failure, the queue retries it.
+     */
     @Test
-    void rejectedAfterAssignTimeout() {
+    void retriedAfterAssignTimeout() {
         final CompletableFuture<Assignment> reply = assign(null);
         allocator.tick(T0 + SETTINGS.assignTimeout().toMillis());
         assertFalse(reply.isDone());
         allocator.tick(T0 + SETTINGS.assignTimeout().toMillis() + 1);
-        assertInstanceOf(Assignment.Rejected.class, reply.join());
+        assertInstanceOf(Assignment.Accepted.class, reply.join());
+        assertEquals(AttemptStatus.RETRY, retried.getFirst().status());
+        assertEquals(new Load(0, 0, 0), allocator.load());
+    }
+
+    @Test
+    void loadCountsWaitingBusyAndCapacity() {
+        final Sidecar a = join("w1", 2);
+        join("w2", 3);
+        assign(null);
+        assign(null);
+        assign(null);
+        assertEquals(new Load(3, 0, 5), allocator.load());
+
+        a.credit(2, 1);
+        assertEquals(new Load(1, 2, 5), allocator.load());
+
+        allocator.completed("w1", a.taskIds().getFirst(), 1);
+        assertEquals(new Load(1, 1, 5), allocator.load());
     }
 
     private Sidecar join(String workerId, int capacity) {

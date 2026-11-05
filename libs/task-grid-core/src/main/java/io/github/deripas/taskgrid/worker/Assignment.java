@@ -11,7 +11,8 @@ public sealed interface Assignment {
     }
 
     /**
-     * The attempt was not taken (e.g. no handler for its kind); no result will come. What to do next is up to the queue.
+     * The attempt was not taken (e.g. no handler for its kind); no result will come. What to do next is up to
+     * the one who assigned it: {@code Dispatcher} fails the task.
      */
     record Rejected(String reason) implements Assignment {
     }

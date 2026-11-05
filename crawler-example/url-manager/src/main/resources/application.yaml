@@ -20,6 +20,13 @@ server:
   port: 8080
   shutdown: graceful
 
+management:
+  endpoints:
+    web:
+      exposure:
+        # prometheus: load of the worker pools by kind for autoscaling (task_grid_worker_*)
+        include: health,prometheus
+
 url-manager:
   grpc-port: 9090
   default-timeout: 60s

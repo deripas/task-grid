@@ -1,5 +1,6 @@
 package io.github.deripas.taskgrid.queue.memory;
 
+import io.github.deripas.taskgrid.queue.DelayPolicy;
 import io.github.deripas.taskgrid.queue.QueueSettings;
 import io.github.deripas.taskgrid.queue.TaskQueue;
 import io.github.deripas.taskgrid.result.memory.MemoryResultStore;
@@ -9,9 +10,9 @@ import io.github.deripas.taskgrid.task.Blob;
 import io.github.deripas.taskgrid.task.Task;
 import io.github.deripas.taskgrid.task.TaskResult;
 import io.github.deripas.taskgrid.task.TaskStatus;
-import io.github.deripas.taskgrid.worker.Assignment;
-import io.github.deripas.taskgrid.worker.AttemptCallback;
 import io.github.deripas.taskgrid.worker.Worker;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -20,8 +21,12 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -29,19 +34,21 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MemoryTaskQueueTest {
-    private final List<Attempt> assigned = new ArrayList<>();
+    private static final Duration PAUSE = Duration.ofMillis(200);
+
+    private final List<Attempt> assigned = new CopyOnWriteArrayList<>();
     private final MemoryResultStore results = new MemoryResultStore(Duration.ofMinutes(1), Clock.systemUTC());
-    /**
-     * Set by the worker factory while the queue is constructed: must be declared before the queue.
-     */
-    private AttemptCallback callback;
-    private final MemoryTaskQueue queue = new MemoryTaskQueue(new QueueSettings(3), results, callback -> {
-        this.callback = callback;
-        return attempt -> {
-            assigned.add(attempt);
-            return CompletableFuture.completedFuture(new Assignment.Accepted());
-        };
-    });
+    private final MemoryTaskQueue queue = new MemoryTaskQueue(new QueueSettings(3), DelayPolicy.NONE, results);
+
+    @BeforeEach
+    void subscribe() {
+        queue.onReady(assigned::add);
+    }
+
+    @AfterEach
+    void close() {
+        queue.close();
+    }
 
     @Test
     void resubmissionWithTheSamePayloadIsNotQueuedAgain() {
@@ -63,7 +70,7 @@ class MemoryTaskQueueTest {
     @Test
     void idIsFreeAgainOnceTheTaskIsFinished() {
         submit(task("t", "payload"));
-        callback.complete(AttemptResult.done(assigned.getFirst(), Blob.of(new byte[0])));
+        queue.complete(AttemptResult.done(assigned.getFirst(), Blob.of(new byte[0])));
 
         submit(task("t", "other"));
         assertEquals(2, assigned.size());
@@ -82,10 +89,10 @@ class MemoryTaskQueueTest {
             throw new IllegalStateException("a failing callback does not stop the others");
         });
         submit(task("t", "payload"));
-        callback.complete(AttemptResult.retry(assigned.getFirst(), "busy"));
+        queue.complete(AttemptResult.retry(assigned.getFirst(), "busy"));
         assertEquals(List.of(), first);
 
-        callback.complete(AttemptResult.done(assigned.get(1), Blob.of(new byte[0])));
+        queue.complete(AttemptResult.done(assigned.get(1), Blob.of(new byte[0])));
 
         assertEquals(1, first.size());
         assertEquals(TaskStatus.DONE, first.getFirst().status());
@@ -105,6 +112,30 @@ class MemoryTaskQueueTest {
         submit(new Task("w2", Blob.of(new byte[0]), Map.of(Worker.AFFINITY_KEY, "b.com")));
 
         assertEquals(List.of("p1", "w1", "w2"), assigned.stream().map(a -> a.task().id()).toList());
+    }
+
+    /**
+     * The queue is usable without a worker: a client takes the ready attempts and completes them itself.
+     */
+    @Test
+    void nextTaskOfAKeyWaitsForThePauseWhileOtherKeysDoNot() throws InterruptedException {
+        try (MemoryTaskQueue paused = new MemoryTaskQueue(new QueueSettings(3), DelayPolicy.fixed(PAUSE), results)) {
+            final BlockingQueue<Attempt> ready = new LinkedBlockingQueue<>();
+            paused.onReady(ready::add);
+            paused.submit(new Task("a1", Blob.of(new byte[0]), Map.of(TaskQueue.PARTITION_KEY, "a.com")));
+            paused.submit(new Task("a2", Blob.of(new byte[0]), Map.of(TaskQueue.PARTITION_KEY, "a.com")));
+            paused.complete(AttemptResult.done(ready.take(), Blob.of(new byte[0])));
+            final long finished = System.nanoTime();
+
+            paused.submit(new Task("b1", Blob.of(new byte[0]), Map.of(TaskQueue.PARTITION_KEY, "b.com")));
+            paused.submit(new Task("n1", Blob.of(new byte[0]), Map.of()));
+            assertEquals(List.of("b1", "n1"), List.of(ready.take().task().id(), ready.take().task().id()));
+
+            final Attempt next = ready.poll(5, TimeUnit.SECONDS);
+            final long waited = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - finished);
+            assertEquals("a2", next.task().id());
+            assertTrue(waited >= PAUSE.toMillis(), "a2 after " + waited + " ms");
+        }
     }
 
     private void submit(Task task) {

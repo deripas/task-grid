@@ -29,10 +29,19 @@ Agreed decisions - [decisions.md](decisions.md), layout - [structure.md](structu
 12. `[x]` **Crawl-delay.** `task-grid-worker-delayed`: a worker decorator holds the next attempt of a partition key
    back until a delay after the result of the previous one (finish to start); url-manager - 1 s per host. Delay from
    robots.txt, cooldown after 429 - through `DelayPolicy`, later. Requirements -
-   `crawler-maket/domain-queue-requirements.md`.
+   `crawler-maket/domain-queue-requirements.md`. Moved into the queue in 14a
+   ([D24](decisions.md#d24-queue-and-worker-are-decoupled-dispatcher-connects-them)), the module is gone.
 13. `[x]` **url-manager: RabbitMQ with reply_to.** Typed client protocol (`url-manager-api`), Spring AMQP; two ways
    of handling by `ack`: `after-submit` (target: acknowledged once queued, the reply from the result callback of the
    queue, `TaskQueue.onResult`) and `after-reply` (transitional, for the in-memory queue: acknowledged after the
    reply is confirmed; requests of a host sharded to one instance by a consistent-hash exchange).
 14. `[ ]` **Pekko engine.** Clustered url-manager (queue partitions by host across nodes), deployable for load tests.
-15. `[ ]` **Later.** Spring Boot starter, gRPC long polling, metrics.
+   - `[x]` **14a. Queue and worker decoupled.** `TaskQueue` hands out ready attempts (`onReady`) and takes their
+     results (`complete`); `Worker` reports to `onComplete`; `Dispatcher` (core) connects them. Crawl-delay is a
+     pause of the partition (`DelayPolicy` in `queue`), `task-grid-worker-delayed` removed. Pool metrics by kind
+     from the remote worker (`/actuator/prometheus`, for KEDA); no credit within assign-timeout - RETRY.
+   - `[ ]` **14b. Persistent queue on Pekko.** Partition as a sharded event-sourced entity, timers for pauses;
+     `submit` completes after persist, `onResult` delivers until success.
+   - `[ ]` **14c. Clustered url-manager.** Sidecar sessions with all nodes, cluster result store, `after-submit`
+     as the main mode.
+15. `[ ]` **Later.** Spring Boot starter, gRPC long polling, more metrics (queue, attempts).

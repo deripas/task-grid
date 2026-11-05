@@ -11,7 +11,6 @@ Makefile                   build entry points: make verify, make test, ...
 libs/                      reusable task-grid libraries, no Spring
   task-grid-core/          domain: types, contracts (ports), in-memory implementations; JDK only
   task-grid-worker-remote/ Worker for handlers behind handler-sidecar: remote.proto (shared with Go), credits, gRPC
-  task-grid-worker-delayed/ Worker decorator: pause of a partition key after a result (crawl-delay); JDK only
 handler-sidecar/           Go process next to a remote handler: session with the node, credit, results (large ones to S3), drain
 starters/                  Spring Boot starters over libs/ (not necessarily one per library)
 crawler-example/           crawler built on task-grid; imports the Spring Boot BOM
@@ -19,7 +18,8 @@ crawler-example/           crawler built on task-grid; imports the Spring Boot B
   fetcher/                 handler: plain Java gRPC server over Apache HttpClient, runs behind handler-sidecar
   url-manager-api/         url_manager.proto - client protocol of url-manager over RabbitMQ (messages only)
   url-manager/             Spring Boot application: POST /fetch and a RabbitMQ queue with reply_to on an in-memory
-                           task-grid node, crawl-delay, remote worker of the fetch kind, large pages read from S3
+                           task-grid node, crawl-delay, remote worker of the fetch kind, large pages read from S3,
+                           pool metrics on /actuator/prometheus
 docs/                      project documents
 .local/                    working notes and scratch files, not in git
 ```

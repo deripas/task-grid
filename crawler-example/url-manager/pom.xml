@@ -26,9 +26,14 @@
             <groupId>io.github.deripas</groupId>
             <artifactId>task-grid-worker-remote</artifactId>
         </dependency>
+        <!-- metrics of the worker pools for autoscaling: /actuator/prometheus -->
         <dependency>
-            <groupId>io.github.deripas</groupId>
-            <artifactId>task-grid-worker-delayed</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
         <dependency>
             <groupId>io.github.deripas</groupId>

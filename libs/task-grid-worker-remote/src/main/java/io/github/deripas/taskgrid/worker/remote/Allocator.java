@@ -31,6 +31,8 @@ import java.util.concurrent.ThreadLocalRandom;
  *   <li>Credit without a matching attempt is returned (Demand with target below limit).</li>
  *   <li>A session remembers its attempts in progress until their results: when it ends, they are retried.</li>
  *   <li>A draining session gets no more attempts and ends when its attempts in progress are completed.</li>
+ *   <li>An attempt without credit within assign-timeout is a technical failure: accepted and reported as RETRY,
+ *   the queue counts the attempt and hands it out again (the pool may be scaling up).</li>
  *   <li>A failed write to a session channel closes the session; the attempt is distributed again.</li>
  * </ul>
  * Pure state machine: no threads, time is a parameter. Methods are called sequentially, one thread at a time;
@@ -183,7 +185,7 @@ final class Allocator {
     }
 
     /**
-     * Periodically: widen candidates of waiting attempts, reject those waiting longer than assign-timeout.
+     * Periodically: widen candidates of waiting attempts, retry those waiting longer than assign-timeout.
      */
     void tick(long now) {
         final long expireBefore = now - settings.assignTimeout().toMillis();
@@ -195,7 +197,8 @@ final class Allocator {
                 it.remove();
                 unkeyed.remove(w.taskId());
                 unlink(w);
-                w.reply.complete(new Assignment.Rejected("no credit from sidecars of kind " + kind + " within "
+                w.reply.complete(new Assignment.Accepted());
+                callback.complete(AttemptResult.retry(w.attempt, "no credit from sidecars of kind " + kind + " within "
                     + settings.assignTimeout()));
             } else if (level(w, now) > w.level) {
                 widened.add(w);
@@ -226,6 +229,19 @@ final class Allocator {
      */
     int sessions() {
         return slots.size();
+    }
+
+    /**
+     * Attempts waiting for credit, attempts in progress and capacity of the sessions of this kind on the node.
+     */
+    Load load() {
+        int busy = 0;
+        int capacity = 0;
+        for (Slot s : slots.values()) {
+            busy += s.inProgress.size();
+            capacity += s.capacity;
+        }
+        return new Load(waiting.size(), busy, capacity);
     }
 
     /**

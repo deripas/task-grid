@@ -19,6 +19,7 @@ import static com.tngtech.archunit.library.dependencies.SlicesRuleDefinition.sli
  *   amqp     FetchMessages, RabbitFetchListener - inbound adapter: RabbitMQ (Spring AMQP), url_manager.proto (v1,
  *            from url-manager-api) &lt;-&gt; fetch; acknowledgement after the reply
  *   grpc     NodeServer - inbound adapter: gRPC server of the node for sidecars (NodeService of task-grid)
+ *   metrics  PoolMetrics - outbound adapter: load of the remote worker by kind -&gt; Micrometer (autoscaling)
  *   fetcher  ProtoPageCodec - outbound adapter: fetcher.proto (from fetcher-api) implements the port PageCodec
  *   blob     S3BlobReader - outbound adapter: S3 (AWS SDK) and zstd implement the port BlobReader
  *   config   UrlManagerProperties - settings, data only
@@ -42,6 +43,7 @@ class ArchitectureTest {
         .layer("amqp").definedBy(BASE + ".amqp..")
         .layer("v1").definedBy(BASE + ".v1..")
         .layer("grpc").definedBy(BASE + ".grpc..")
+        .layer("metrics").definedBy(BASE + ".metrics..")
         .layer("fetcher").definedBy(BASE + ".fetcher..")
         .layer("blob").definedBy(BASE + ".blob..")
         .layer("config").definedBy(BASE + ".config..")
@@ -51,6 +53,7 @@ class ArchitectureTest {
         .whereLayer("amqp").mayOnlyBeAccessedByLayers("app")
         .whereLayer("v1").mayOnlyBeAccessedByLayers("amqp")
         .whereLayer("grpc").mayOnlyBeAccessedByLayers("app")
+        .whereLayer("metrics").mayOnlyBeAccessedByLayers("app")
         .whereLayer("fetcher").mayOnlyBeAccessedByLayers("app")
         .whereLayer("blob").mayOnlyBeAccessedByLayers("app")
         .whereLayer("config").mayOnlyBeAccessedByLayers("app")
@@ -67,14 +70,16 @@ class ArchitectureTest {
             BASE + ".fetch..");
 
     /**
-     * Implementations of task-grid (memory, remote) are chosen by the assembly; the gRPC server only hosts NodeService.
+     * Implementations of task-grid (memory, remote) and their wiring (dispatch) are chosen by the assembly; the gRPC
+     * server only hosts NodeService; metrics read the load of the remote worker - it is the remote worker that knows
+     * its waiting attempts and slots.
      */
     @ArchTest
     static final ArchRule TASK_GRID_IMPLEMENTATIONS_ONLY_IN_APP_AND_GRPC = noClasses()
-        .that().resideOutsideOfPackages(BASE + ".app..", BASE + ".grpc..")
+        .that().resideOutsideOfPackages(BASE + ".app..", BASE + ".grpc..", BASE + ".metrics..")
         .should().dependOnClassesThat().resideInAnyPackage(
             TASK_GRID + ".queue.memory..", TASK_GRID + ".result.memory..", TASK_GRID + ".worker.remote..", TASK_GRID + ".worker.local..",
-            TASK_GRID + ".worker.delayed..");
+            TASK_GRID + ".dispatch..");
 
     @ArchTest
     static final ArchRule NO_SPRING_IN_DOMAIN_AND_OUTBOUND_ADAPTERS = noClasses()

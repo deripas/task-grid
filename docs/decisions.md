@@ -185,6 +185,9 @@ shutdown timeout of the handler, `DRAIN_TIMEOUT` + margin `< terminationGracePer
 
 ## D21. Crawl-delay is a worker decorator, not a queue
 
+_Superseded by [D24](#d24-queue-and-worker-are-decoupled-dispatcher-connects-them): the pause is part of the
+partition. The rules of the pause below still hold, except the one about rejected assignments._
+
 - The queue already runs one attempt of an affinity key at a time, in order; politeness only adds a pause between
   the result of an attempt and the next attempt of its key (finish to start). `DelayedWorker` (module
   `task-grid-worker-delayed`) wraps any worker and holds that next attempt back; queues stay as they are, and the
@@ -233,5 +236,40 @@ shutdown timeout of the handler, `DRAIN_TIMEOUT` + margin `< terminationGracePer
 - The submitter sets them per task: it chooses the kind anyway. Not a per-kind setting of the node (one name would
   still mean two things, and the setting would live away from whoever knows the pool), not yet a flag in `Hello` of
   the sidecar - possible later on top of the key.
-- Each key is declared by the component it belongs to; `DelayedWorker` reads the partition key and may depend on the
-  `queue` port package for it (its `ArchitectureTest`). Replaces the single `affinity-key` of D14.
+- Each key is declared by the component it belongs to. Replaces the single `affinity-key` of D14. (`DelayedWorker`,
+  which read the partition key from the `queue` package, is gone with D24: the pause lives in the queue now.)
+
+## D24. Queue and worker are decoupled, Dispatcher connects them
+
+- Each implementation used to do the wiring itself: the queue created its worker with itself as the callback
+  (`Function<AttemptCallback, Worker>`), and `DelayedWorker` did the same. The queue could not be used without a
+  worker, and every engine (Pekko next) would repeat the wiring.
+- Symmetric ports with subscription. `TaskQueue`: `submit`, `onReady(ReadyCallback)` - attempts ready to run,
+  `complete(AttemptResult)`, `onResult`. `Worker`: `assign`, `onComplete(AttemptCallback)`. Either is usable alone:
+  a client may take ready attempts and complete them itself. `Dispatcher.connect(queue, worker)` in core - the same
+  for every implementation; an attempt the worker rejects is a FAILED result through the queue
+  (`rejected: <reason>`), so the queue does not know `Assignment`.
+- Not a pull API (`take` / lease): it needs a wake-up signal and lease timeouts and, in a cluster, a `take` to every
+  shard, while the partition already tracks its attempt in progress. Not a function applied to the queue state
+  (`process(key, state -> ...)`): a lambda cannot travel to the node of a partition nor go into a journal - commands
+  must be data.
+- Crawl-delay is a pause of the partition (`Partition` asks its engine to `resume` it after `DelayPolicy.after`): the
+  queue owns the order of a key, so it owns the time between its attempts; the in-memory engine uses a timer, the
+  Pekko engine will use timers of the entity. Rules of D21 hold; a rejected attempt is a FAILED result now and starts
+  the pause too (rare: no handler for the kind, node stopping). A paused partition with no tasks stays until its
+  pause ends.
+- The buffer between the speed of the queue and the speed of the pool stays in the worker: the remote worker needs
+  the waiting attempts to compute demand for the sidecars (credit, HRW widening). The queue hands out at most one
+  attempt per partition, so the buffer is bounded by the active partitions.
+
+## D25. Pool metrics come from the remote worker; no credit in time is a RETRY
+
+- `RemoteWorker.load()` by kind: `waiting` (attempts waiting for a free slot - tasks idle because the pool is small),
+  `busy` (attempts in progress), `capacity` (slots of the sessions). url-manager exports them as
+  `task_grid_worker_{waiting,busy,capacity}{kind}` on `/actuator/prometheus` (Micrometer); KEDA scales the pools:
+  throughput-bound pools (`fetch`, js-render) keep `busy / capacity` near a target (80%), latency-bound ones
+  (page-speed) scale up as soon as `waiting > 0`.
+- In a cluster each node reports its own view; `waiting` and `busy` add up, `capacity` of a sidecar connected to every
+  node does not (14c).
+- An attempt without credit within `assignTimeout` was rejected, failing the task - wrong while a pool scales up from
+  few or zero pods. Now it is accepted and reported as RETRY: the queue counts the attempt and hands it out again.

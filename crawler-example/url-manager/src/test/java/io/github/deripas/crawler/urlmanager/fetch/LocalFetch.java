@@ -1,5 +1,7 @@
 package io.github.deripas.crawler.urlmanager.fetch;
 
+import io.github.deripas.taskgrid.dispatch.Dispatcher;
+import io.github.deripas.taskgrid.queue.DelayPolicy;
 import io.github.deripas.taskgrid.queue.QueueSettings;
 import io.github.deripas.taskgrid.queue.memory.MemoryTaskQueue;
 import io.github.deripas.taskgrid.result.ResultStore;
@@ -27,6 +29,7 @@ import java.util.concurrent.Executors;
 public final class LocalFetch implements AutoCloseable {
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     private final List<Attempt> attempts = new CopyOnWriteArrayList<>();
+    private final MemoryTaskQueue queue;
     private final FetchService service;
 
     /**
@@ -39,8 +42,8 @@ public final class LocalFetch implements AutoCloseable {
             attempts.add(attempt);
             return handler.handle(attempt);
         };
-        final MemoryTaskQueue queue = new MemoryTaskQueue(new QueueSettings(2), results, callback ->
-            new LocalWorker(Map.of(FetchService.KIND, recording), executor, callback));
+        queue = new MemoryTaskQueue(new QueueSettings(2), DelayPolicy.NONE, results);
+        Dispatcher.connect(queue, new LocalWorker(Map.of(FetchService.KIND, recording), executor));
         this.service = new FetchService(queue, results, new PageCodec() {
             @Override
             public byte[] request(PageUrl url) {
@@ -69,6 +72,7 @@ public final class LocalFetch implements AutoCloseable {
     @Override
     public void close() {
         executor.shutdownNow();
+        queue.close();
     }
 
     /**

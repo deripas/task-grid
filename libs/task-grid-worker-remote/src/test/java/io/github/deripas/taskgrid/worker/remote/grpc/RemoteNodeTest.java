@@ -1,5 +1,7 @@
 package io.github.deripas.taskgrid.worker.remote.grpc;
 
+import io.github.deripas.taskgrid.dispatch.Dispatcher;
+import io.github.deripas.taskgrid.queue.DelayPolicy;
 import io.github.deripas.taskgrid.queue.QueueSettings;
 import io.github.deripas.taskgrid.queue.TaskQueue;
 import io.github.deripas.taskgrid.queue.memory.MemoryTaskQueue;
@@ -48,7 +50,7 @@ class RemoteNodeTest {
     private final ResultStore results = new MemoryResultStore(Duration.ofMinutes(1), Clock.systemUTC());
     private final List<TestSidecar> sidecars = new ArrayList<>();
     private RemoteWorker worker;
-    private TaskQueue queue;
+    private MemoryTaskQueue queue;
     private Server server;
     private ManagedChannel channel;
 
@@ -58,6 +60,7 @@ class RemoteNodeTest {
         channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
         server.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
         worker.close();
+        queue.close();
     }
 
     @Test
@@ -162,10 +165,9 @@ class RemoteNodeTest {
     }
 
     private void start(RemoteSettings settings) throws IOException {
-        queue = new MemoryTaskQueue(new QueueSettings(3), results, callback -> {
-            worker = new RemoteWorker(settings, callback, Clock.systemUTC());
-            return worker;
-        });
+        queue = new MemoryTaskQueue(new QueueSettings(3), DelayPolicy.NONE, results);
+        worker = new RemoteWorker(settings, Clock.systemUTC());
+        Dispatcher.connect(queue, worker);
         final String name = InProcessServerBuilder.generateName();
         server = InProcessServerBuilder.forName(name).addService(new NodeService(worker)).build().start();
         channel = InProcessChannelBuilder.forName(name).build();
