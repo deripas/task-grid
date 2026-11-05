@@ -65,7 +65,7 @@ public final class NodeService extends NodeGrpc.NodeImplBase {
         final String error = status == AttemptStatus.DONE
             ? null
             : request.getError();
-        return new AttemptResult(request.getTaskId(), request.getAttempt(), status, body, error);
+        return new AttemptResult(request.getTaskId(), request.getAttempt(), request.getMetaMap(), status, body, error);
     }
 
     /**

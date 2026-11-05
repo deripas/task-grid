@@ -242,6 +242,7 @@ func (s *Sidecar) accept(sess *session, a domain.Attempt) {
 			s.complete(domain.Completion{
 				TaskID:  a.TaskID,
 				Attempt: a.Number,
+				Meta:    a.Meta,
 				Result:  domain.Result{Status: domain.Retry, Error: "attempt beyond the credit of the sidecar"},
 			})
 		}()
@@ -260,7 +261,7 @@ func (s *Sidecar) run(a domain.Attempt) {
 	s.mu.Unlock()
 	s.log.Debug("attempt finished", "task", a.TaskID, "attempt", a.Number, "status", res.Status,
 		"ms", time.Since(started).Milliseconds(), "bytes", len(res.Body), "blob", res.Blob != nil)
-	s.complete(domain.Completion{TaskID: a.TaskID, Attempt: a.Number, Result: res})
+	s.complete(domain.Completion{TaskID: a.TaskID, Attempt: a.Number, Meta: a.Meta, Result: res})
 }
 
 // offload puts an answer above InlineMax into blob storage: the result carries the reference instead of the body.

@@ -62,7 +62,7 @@ public class UrlManagerConfiguration {
 
     @Bean
     Node node(UrlManagerProperties properties, ResultStore results) {
-        final MemoryTaskQueue queue = new MemoryTaskQueue(new QueueSettings(properties.maxAttempts()),
+        final MemoryTaskQueue queue = new MemoryTaskQueue(new QueueSettings(properties.maxAttempts(), properties.attemptTimeout()),
             DelayPolicy.fixed(properties.crawlDelay()), results);
         final RemoteWorker remote = new RemoteWorker(RemoteSettings.DEFAULTS, Clock.systemUTC());
         Dispatcher.connect(queue, remote);

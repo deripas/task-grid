@@ -290,3 +290,40 @@ partition. The rules of the pause below still hold, except the one about rejecte
   5 minutes and closes more eager clients with `too_many_pings`, so both ends are configured together.
 - Other connections: between Pekko nodes - the failure detector of the cluster (14b/14c); RabbitMQ - heartbeat of
   the client (60s by default); S3 and the sites - timeouts of the HTTP clients.
+
+## D27. Persistent queue: event-sourced partitions in a Pekko cluster
+
+- One state machine for every engine: `Partition` (core, `queue.partition`) decides events from commands (`submit`,
+  `completed`, `tick`, `delivered`) without changing itself; `apply` changes it. The in-memory queue applies events at
+  once; `task-grid-queue-pekko` persists them first. Decisions are inside the events - the deadline of an attempt,
+  the final result, the end of the pause as absolute time - so a replay gives the same state whatever the settings
+  and the clock are then (as in `url-manager-cluster` of the prototype). Effects are carried out after the events are
+  applied (in memory - after the lock is released), so a receiver may call the queue again at once.
+- `attemptTimeout` (`QueueSettings`, url-manager `attempt-timeout: 15m`, above `max-timeout`): a persistent queue
+  outlives its worker; an attempt handed out by a node that is gone would wait forever. Its late result is ignored.
+- A partition is a sharded entity `task-grid-partition` with id `k:<partition key>` or `t:<task id>`. The result of an
+  attempt finds it by the meta of the task, which now travels back with the result (`AttemptResult.meta`,
+  `CompleteRequest.meta = 8` echoed by the sidecar) - on any node, also after the partition moved.
+- Effects: `Started` - the attempt to the `ReadyCallback`s of the node of the partition (a `Dispatcher` to its local
+  worker); `Ended` with a result - to the result store and the `ResultCallback`s, repeated every `redeliver-after`
+  until all succeed, then `Delivered` is persisted (at least once, also after a restart). An attempt in progress is not
+  handed out again after recovery: its result may still come; otherwise its deadline retries it.
+- Remembered entities with the event-sourced store (survives a restart of the whole cluster, no disk of the nodes),
+  snapshots every 100 events (immutable `PartitionSnapshot` through a snapshot adapter, two kept, older events
+  deleted). An empty partition stays for `idle-timeout` (2m, above the usual crawl-delay) and then passivates if
+  still empty and its pause is over: the URLs of a host often come further apart than the crawl-delay, and each of
+  them would otherwise start the entity, replay its journal and stop it again; within the timeout the rest of the
+  pause is known from memory, after it the pause is surely over. Correctness does not depend on the value - an entity
+  never stops before its pause ends. Before it stops it persists `Rested` (an event of the entity, not of the
+  partition) that triggers a snapshot of the empty state: the next recovery of the key reads one small snapshot, and
+  the retention deletes the events before it - the journal of a key crawled for months does not grow. Nothing changed
+  since the last `Rested` - no new event. A command that reaches an entity after it asked to passivate is not lost: at
+  the stop it sends itself a tick through sharding and is started again.
+- Serialization of commands, events and snapshots: Jackson CBOR of Pekko; the core types know nothing of Jackson - a
+  module with mix-ins (`Blob` subtypes `inline` / `ref`, part of the journal format). The tests serialize every
+  message (`serialize-messages = on`) and the journal of the persistence testkit serializes events and snapshots.
+- The library does not create the actor system: cluster, journal plugin (url-manager: `pekko-persistence-cassandra`
+  with ScyllaDB, 14c) and their settings belong to the application; its own settings - `task-grid.queue.pekko`.
+- Known gap until 14c: `complete` is a tell and `NodeService` answers the sidecar before the partition persisted the
+  result; a result lost on the way waits for the attempt timeout. With sessions to every node the answer will wait for
+  the partition.

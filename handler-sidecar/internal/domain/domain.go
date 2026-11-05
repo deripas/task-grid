@@ -55,5 +55,6 @@ type BlobRef struct {
 type Completion struct {
 	TaskID  string
 	Attempt int
+	Meta    map[string]string // of the attempt, sent back: the node finds the task by it
 	Result
 }

@@ -13,7 +13,9 @@ import static com.tngtech.archunit.library.dependencies.SlicesRuleDefinition.sli
  * Architecture rules of task-grid-core, checked by the regular build ({@code make verify}).
  * <pre>
  *   queue.memory   result.memory   worker.local     implementations: see only ports, nobody sees them
- *                                                   (queue.memory: Partition state machine; worker.local: Handler)
+ *         ↓                                         (worker.local: Handler)
+ *   queue.partition  Partition, PartitionEvent - event-sourced state machine of a partition, shared by the queue
+ *                    engines (in-memory here, Pekko in its own library)
  *   dispatch       Dispatcher - connects a queue to a worker through their ports, nobody sees it
  *
  *   queue    TaskQueue, DelayPolicy, callbacks      worker   Worker, AttemptCallback, Assignment
@@ -38,6 +40,7 @@ class ArchitectureTest {
         .layer("worker").definedBy(BASE + ".worker")
         .layer("result").definedBy(BASE + ".result")
         .layer("queue").definedBy(BASE + ".queue")
+        .layer("queue.partition").definedBy(BASE + ".queue.partition..")
         .layer("dispatch").definedBy(BASE + ".dispatch..")
         .layer("worker.local").definedBy(BASE + ".worker.local..")
         .layer("result.memory").definedBy(BASE + ".result.memory..")
@@ -46,11 +49,13 @@ class ArchitectureTest {
         .whereLayer("result.memory").mayNotBeAccessedByAnyLayer()
         .whereLayer("worker.local").mayNotBeAccessedByAnyLayer()
         .whereLayer("dispatch").mayNotBeAccessedByAnyLayer()
-        .whereLayer("queue").mayOnlyBeAccessedByLayers("queue.memory", "dispatch")
+        .whereLayer("queue").mayOnlyBeAccessedByLayers("queue.memory", "queue.partition", "dispatch")
+        // public: the engines of other libraries (Pekko) run the same state machine
+        .whereLayer("queue.partition").mayOnlyBeAccessedByLayers("queue.memory")
         .whereLayer("result").mayOnlyBeAccessedByLayers("queue", "queue.memory", "result.memory")
         .whereLayer("worker").mayOnlyBeAccessedByLayers("worker.local", "dispatch")
         .whereLayer("task").mayOnlyBeAccessedByLayers(
-            "queue", "worker", "result", "dispatch", "queue.memory", "result.memory", "worker.local");
+            "queue", "worker", "result", "dispatch", "queue.partition", "queue.memory", "result.memory", "worker.local");
 
     /**
      * Core is reusable in any environment: the JDK plus a short, explicit list of libraries.

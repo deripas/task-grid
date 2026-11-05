@@ -314,6 +314,10 @@ func TestAttemptsAreExecutedWithinCapacity(t *testing.T) {
 		if reply.Metadata["x-task-id"] != r.TaskId || reply.Metadata["x-meta-client.request-id"] != "r-"+r.TaskId {
 			t.Fatalf("metadata %v", reply.Metadata)
 		}
+		// the meta of the attempt goes back: the node finds the task by it
+		if r.Meta["client.request-id"] != "r-"+r.TaskId || r.Meta["kind"] != "echo" {
+			t.Fatalf("meta of the result %v", r.Meta)
+		}
 	}
 	if p := h.handler.Peak(); p != 2 {
 		t.Fatalf("peak %d concurrent calls, want capacity 2", p)
@@ -376,6 +380,9 @@ func TestAttemptBeyondCreditIsRetriedWithoutCall(t *testing.T) {
 	for range 2 {
 		r := n.result(t)
 		statuses[r.TaskId] = r.Status
+		if r.Meta["client.request-id"] != "r-"+r.TaskId {
+			t.Fatalf("meta of the result %v", r.Meta)
+		}
 	}
 	if statuses["t2"] != remotev1.Status_RETRY {
 		t.Fatalf("statuses %v, want t2 RETRY", statuses)

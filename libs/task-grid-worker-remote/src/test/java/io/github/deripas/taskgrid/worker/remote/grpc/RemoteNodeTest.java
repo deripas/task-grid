@@ -165,7 +165,7 @@ class RemoteNodeTest {
     }
 
     private void start(RemoteSettings settings) throws IOException {
-        queue = new MemoryTaskQueue(new QueueSettings(3), DelayPolicy.NONE, results);
+        queue = new MemoryTaskQueue(new QueueSettings(3, Duration.ofMinutes(1)), DelayPolicy.NONE, results);
         worker = new RemoteWorker(settings, Clock.systemUTC());
         Dispatcher.connect(queue, worker);
         final String name = InProcessServerBuilder.generateName();

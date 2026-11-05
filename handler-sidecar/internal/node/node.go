@@ -79,6 +79,7 @@ func (c *Client) Complete(ctx context.Context, workerID string, comp domain.Comp
 		Attempt:  int32(comp.Attempt),
 		Status:   toProto(comp.Status),
 		Error:    comp.Error,
+		Meta:     comp.Meta,
 	}
 	if b := comp.Blob; b != nil {
 		req.Result = &remotev1.CompleteRequest_Blob{Blob: &remotev1.BlobRef{

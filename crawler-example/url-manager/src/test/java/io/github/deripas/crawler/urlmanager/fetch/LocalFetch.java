@@ -42,7 +42,7 @@ public final class LocalFetch implements AutoCloseable {
             attempts.add(attempt);
             return handler.handle(attempt);
         };
-        queue = new MemoryTaskQueue(new QueueSettings(2), DelayPolicy.NONE, results);
+        queue = new MemoryTaskQueue(new QueueSettings(2, Duration.ofMinutes(1)), DelayPolicy.NONE, results);
         Dispatcher.connect(queue, new LocalWorker(Map.of(FetchService.KIND, recording), executor));
         this.service = new FetchService(queue, results, new PageCodec() {
             @Override

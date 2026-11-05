@@ -11,6 +11,7 @@ Makefile                   build entry points: make verify, make test, ...
 libs/                      reusable task-grid libraries, no Spring
   task-grid-core/          domain: types, contracts (ports), in-memory implementations; JDK only
   task-grid-worker-remote/ Worker for handlers behind handler-sidecar: remote.proto (shared with Go), credits, gRPC
+  task-grid-queue-pekko/   persistent queue of a Pekko cluster: a partition is a sharded event-sourced entity
 handler-sidecar/           Go process next to a remote handler: session with the node, credit, results (large ones to S3), drain
 starters/                  Spring Boot starters over libs/ (not necessarily one per library)
 crawler-example/           crawler built on task-grid; imports the Spring Boot BOM
@@ -30,7 +31,7 @@ Names are tentative until the corresponding roadmap step.
 
 | Module | Role |
 |---|---|
-| `libs/` Pekko library | cluster engine: sharded queues and results, cluster-wide dispatch |
+| `libs/` Pekko result store | results awaited on any node of the cluster (14c) |
 | `starters/` | auto-configuration of a task-grid node for Spring Boot applications |
 
 ## Dependency direction

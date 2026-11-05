@@ -151,7 +151,8 @@ final class TestSidecar implements AutoCloseable {
         final CompleteRequest.Builder result = CompleteRequest.newBuilder()
             .setWorkerId(workerId)
             .setTaskId(attempt.getTaskId())
-            .setAttempt(attempt.getNumber());
+            .setAttempt(attempt.getNumber())
+            .putAllMeta(attempt.getMetaMap());
         try {
             result.setStatus(Status.DONE).setBody(ByteString.copyFrom(handler.handle(attempt)));
         } catch (InterruptedException e) {

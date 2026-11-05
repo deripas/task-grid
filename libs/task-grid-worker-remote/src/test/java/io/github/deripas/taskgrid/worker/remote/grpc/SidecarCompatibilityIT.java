@@ -93,7 +93,7 @@ class SidecarCompatibilityIT {
 
     @BeforeEach
     void start() throws IOException {
-        queue = new MemoryTaskQueue(new QueueSettings(3), DelayPolicy.NONE, results);
+        queue = new MemoryTaskQueue(new QueueSettings(3, Duration.ofMinutes(1)), DelayPolicy.NONE, results);
         worker = new RemoteWorker(RemoteSettings.DEFAULTS, Clock.systemUTC());
         Dispatcher.connect(queue, worker);
         node = Grpc.newServerBuilderForPort(0, InsecureServerCredentials.create())

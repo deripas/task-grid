@@ -507,8 +507,11 @@ type CompleteRequest struct {
 	//
 	//	*CompleteRequest_Body
 	//	*CompleteRequest_Blob
-	Result        isCompleteRequest_Result `protobuf_oneof:"result"`
-	Error         string                   `protobuf:"bytes,6,opt,name=error,proto3" json:"error,omitempty"` // not DONE: description of the failure
+	Result isCompleteRequest_Result `protobuf_oneof:"result"`
+	Error  string                   `protobuf:"bytes,6,opt,name=error,proto3" json:"error,omitempty"` // not DONE: description of the failure
+	// Attempt.meta as received: the node finds the queue partition of the task by it, also after the task has
+	// moved to another node
+	Meta          map[string]string `protobuf:"bytes,8,rep,name=meta,proto3" json:"meta,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -601,6 +604,13 @@ func (x *CompleteRequest) GetError() string {
 		return x.Error
 	}
 	return ""
+}
+
+func (x *CompleteRequest) GetMeta() map[string]string {
+	if x != nil {
+		return x.Meta
+	}
+	return nil
 }
 
 type isCompleteRequest_Result interface {
@@ -754,7 +764,7 @@ const file_taskgrid_worker_remote_v1_remote_proto_rawDesc = "" +
 	"\apayload\x18\x04 \x01(\fR\apayload\x1a7\n" +
 	"\tMetaEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8c\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8f\x03\n" +
 	"\x0fCompleteRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x17\n" +
 	"\atask_id\x18\x02 \x01(\tR\x06taskId\x12\x18\n" +
@@ -762,7 +772,11 @@ const file_taskgrid_worker_remote_v1_remote_proto_rawDesc = "" +
 	"\x06status\x18\x04 \x01(\x0e2!.taskgrid.worker.remote.v1.StatusR\x06status\x12\x14\n" +
 	"\x04body\x18\x05 \x01(\fH\x00R\x04body\x128\n" +
 	"\x04blob\x18\a \x01(\v2\".taskgrid.worker.remote.v1.BlobRefH\x00R\x04blob\x12\x14\n" +
-	"\x05error\x18\x06 \x01(\tR\x05errorB\b\n" +
+	"\x05error\x18\x06 \x01(\tR\x05error\x12H\n" +
+	"\x04meta\x18\b \x03(\v24.taskgrid.worker.remote.v1.CompleteRequest.MetaEntryR\x04meta\x1a7\n" +
+	"\tMetaEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\b\n" +
 	"\x06result\"m\n" +
 	"\aBlobRef\x12\x1a\n" +
 	"\blocation\x18\x01 \x01(\tR\blocation\x12\x12\n" +
@@ -794,7 +808,7 @@ func file_taskgrid_worker_remote_v1_remote_proto_rawDescGZIP() []byte {
 }
 
 var file_taskgrid_worker_remote_v1_remote_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_taskgrid_worker_remote_v1_remote_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_taskgrid_worker_remote_v1_remote_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_taskgrid_worker_remote_v1_remote_proto_goTypes = []any{
 	(Status)(0),              // 0: taskgrid.worker.remote.v1.Status
 	(*SidecarMessage)(nil),   // 1: taskgrid.worker.remote.v1.SidecarMessage
@@ -807,6 +821,7 @@ var file_taskgrid_worker_remote_v1_remote_proto_goTypes = []any{
 	(*BlobRef)(nil),          // 8: taskgrid.worker.remote.v1.BlobRef
 	(*CompleteResponse)(nil), // 9: taskgrid.worker.remote.v1.CompleteResponse
 	nil,                      // 10: taskgrid.worker.remote.v1.Attempt.MetaEntry
+	nil,                      // 11: taskgrid.worker.remote.v1.CompleteRequest.MetaEntry
 }
 var file_taskgrid_worker_remote_v1_remote_proto_depIdxs = []int32{
 	2,  // 0: taskgrid.worker.remote.v1.SidecarMessage.hello:type_name -> taskgrid.worker.remote.v1.Hello
@@ -816,15 +831,16 @@ var file_taskgrid_worker_remote_v1_remote_proto_depIdxs = []int32{
 	10, // 4: taskgrid.worker.remote.v1.Attempt.meta:type_name -> taskgrid.worker.remote.v1.Attempt.MetaEntry
 	0,  // 5: taskgrid.worker.remote.v1.CompleteRequest.status:type_name -> taskgrid.worker.remote.v1.Status
 	8,  // 6: taskgrid.worker.remote.v1.CompleteRequest.blob:type_name -> taskgrid.worker.remote.v1.BlobRef
-	1,  // 7: taskgrid.worker.remote.v1.Node.Connect:input_type -> taskgrid.worker.remote.v1.SidecarMessage
-	7,  // 8: taskgrid.worker.remote.v1.Node.Complete:input_type -> taskgrid.worker.remote.v1.CompleteRequest
-	4,  // 9: taskgrid.worker.remote.v1.Node.Connect:output_type -> taskgrid.worker.remote.v1.NodeMessage
-	9,  // 10: taskgrid.worker.remote.v1.Node.Complete:output_type -> taskgrid.worker.remote.v1.CompleteResponse
-	9,  // [9:11] is the sub-list for method output_type
-	7,  // [7:9] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	11, // 7: taskgrid.worker.remote.v1.CompleteRequest.meta:type_name -> taskgrid.worker.remote.v1.CompleteRequest.MetaEntry
+	1,  // 8: taskgrid.worker.remote.v1.Node.Connect:input_type -> taskgrid.worker.remote.v1.SidecarMessage
+	7,  // 9: taskgrid.worker.remote.v1.Node.Complete:input_type -> taskgrid.worker.remote.v1.CompleteRequest
+	4,  // 10: taskgrid.worker.remote.v1.Node.Connect:output_type -> taskgrid.worker.remote.v1.NodeMessage
+	9,  // 11: taskgrid.worker.remote.v1.Node.Complete:output_type -> taskgrid.worker.remote.v1.CompleteResponse
+	10, // [10:12] is the sub-list for method output_type
+	8,  // [8:10] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_taskgrid_worker_remote_v1_remote_proto_init() }
@@ -850,7 +866,7 @@ func file_taskgrid_worker_remote_v1_remote_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_taskgrid_worker_remote_v1_remote_proto_rawDesc), len(file_taskgrid_worker_remote_v1_remote_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   10,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

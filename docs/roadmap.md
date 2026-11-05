@@ -40,8 +40,12 @@ Agreed decisions - [decisions.md](decisions.md), layout - [structure.md](structu
      results (`complete`); `Worker` reports to `onComplete`; `Dispatcher` (core) connects them. Crawl-delay is a
      pause of the partition (`DelayPolicy` in `queue`), `task-grid-worker-delayed` removed. Pool metrics by kind
      from the remote worker (`/actuator/prometheus`, for KEDA); no credit within assign-timeout - RETRY.
-   - `[ ]` **14b. Persistent queue on Pekko.** Partition as a sharded event-sourced entity, timers for pauses;
-     `submit` completes after persist, `onResult` delivers until success.
+   - `[x]` **14b. Persistent queue on Pekko.** `Partition` is an event-sourced state machine in core
+     (`queue.partition`, time as a parameter, attempt timeout), the in-memory queue runs on it;
+     `task-grid-queue-pekko`: a partition is a sharded event-sourced entity (remembered, snapshots, timers for
+     pauses and deadlines), `submit` completes after persist, `onResult` delivers until success; the meta of the
+     task comes back with the result (`AttemptResult.meta`, `Complete.meta`) to find the partition on any node.
+     Tests on an in-memory journal; the Cassandra / ScyllaDB plugin comes with url-manager in 14c.
    - `[ ]` **14c. Clustered url-manager.** Sidecar sessions with all nodes, cluster result store, `after-submit`
      as the main mode.
 15. `[ ]` **Later.** Spring Boot starter, gRPC long polling, more metrics (queue, attempts).

@@ -60,7 +60,7 @@ class LocalNodeTest {
             }
             return attempt.task().payload();
         });
-    private final MemoryTaskQueue queue = new MemoryTaskQueue(new QueueSettings(3), DelayPolicy.NONE, results);
+    private final MemoryTaskQueue queue = new MemoryTaskQueue(new QueueSettings(3, Duration.ofMinutes(1)), DelayPolicy.NONE, results);
 
     @BeforeEach
     void connect() {

@@ -96,6 +96,9 @@ message CompleteRequest {
     BlobRef blob = 7;
   }
   string error = 6;         // not DONE: description of the failure
+  // Attempt.meta as received: the node finds the queue partition of the task by it, also after the task has
+  // moved to another node
+  map<string, string> meta = 8;
 }
 
 // Output of the handler in blob storage. Deleting it is the job of the storage (TTL of the key prefix).

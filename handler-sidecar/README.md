@@ -41,7 +41,7 @@ Handler -> sidecar: the status of the attempt follows the gRPC status, the respo
 | Keepalive | HTTP/2 pings every `NODE_KEEPALIVE_TIME`, also without calls; no answer within `NODE_KEEPALIVE_TIMEOUT` - the connection is closed, the session breaks and the sidecar reconnects. A connection that is open but carries nothing (a hung network path) is found in ~15 s instead of never. The node pings too and drops the session of a hung sidecar: its attempts are retried |
 | Credit | slots belong to the sidecar: unused credit plus attempts in progress <= `CAPACITY`, granted by the demand of the node; surplus credit returned by the node frees the slot. An attempt beyond credit is not executed - `RETRY` |
 | Large result | a response above `INLINE_MAX` is put into the S3 bucket `BLOB_S3_BUCKET` (zstd) under `<BLOB_PREFIX><task id>/<random>`, within the slot of the attempt; `Complete` carries `BlobRef` (`s3://<bucket>/<key>`, size and sha256 of the response before compression). Storage fails - `RETRY`. Objects are not deleted here: give the bucket a lifecycle rule (TTL) on the prefix |
-| Result | `Complete` repeated every `RETRY_INTERVAL` until OK; `INVALID_ARGUMENT` from the node - given up |
+| Result | `Complete` with the meta of the attempt (the node finds the partition of the task by it) repeated every `RETRY_INTERVAL` until OK; `INVALID_ARGUMENT` from the node - given up |
 | SIGTERM | drain: no more credit, half-close of the stream; attempts in progress are finished and delivered, the node closes the stream, exit code 0. After `DRAIN_TIMEOUT` the work is abandoned and the exit code is 1: the stop was not clean |
 
 ## Deployment and stop order

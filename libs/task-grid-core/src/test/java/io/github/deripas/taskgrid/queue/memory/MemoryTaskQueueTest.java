@@ -38,7 +38,7 @@ class MemoryTaskQueueTest {
 
     private final List<Attempt> assigned = new CopyOnWriteArrayList<>();
     private final MemoryResultStore results = new MemoryResultStore(Duration.ofMinutes(1), Clock.systemUTC());
-    private final MemoryTaskQueue queue = new MemoryTaskQueue(new QueueSettings(3), DelayPolicy.NONE, results);
+    private final MemoryTaskQueue queue = new MemoryTaskQueue(new QueueSettings(3, Duration.ofMinutes(1)), DelayPolicy.NONE, results);
 
     @BeforeEach
     void subscribe() {
@@ -119,7 +119,7 @@ class MemoryTaskQueueTest {
      */
     @Test
     void nextTaskOfAKeyWaitsForThePauseWhileOtherKeysDoNot() throws InterruptedException {
-        try (MemoryTaskQueue paused = new MemoryTaskQueue(new QueueSettings(3), DelayPolicy.fixed(PAUSE), results)) {
+        try (MemoryTaskQueue paused = new MemoryTaskQueue(new QueueSettings(3, Duration.ofMinutes(1)), DelayPolicy.fixed(PAUSE), results)) {
             final BlockingQueue<Attempt> ready = new LinkedBlockingQueue<>();
             paused.onReady(ready::add);
             paused.submit(new Task("a1", Blob.of(new byte[0]), Map.of(TaskQueue.PARTITION_KEY, "a.com")));
@@ -135,6 +135,22 @@ class MemoryTaskQueueTest {
             final long waited = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - finished);
             assertEquals("a2", next.task().id());
             assertTrue(waited >= PAUSE.toMillis(), "a2 after " + waited + " ms");
+        }
+    }
+
+    /**
+     * The worker never answers (its node is gone): after the attempt timeout the attempt is handed out again.
+     */
+    @Test
+    void attemptWithoutAResultIsHandedOutAgainAfterTheTimeout() throws InterruptedException {
+        try (MemoryTaskQueue timed = new MemoryTaskQueue(new QueueSettings(3, Duration.ofMillis(200)), DelayPolicy.NONE, results)) {
+            final BlockingQueue<Attempt> ready = new LinkedBlockingQueue<>();
+            timed.onReady(ready::add);
+            timed.submit(task("t", "payload"));
+
+            assertEquals(1, ready.take().number());
+            final Attempt second = ready.poll(5, TimeUnit.SECONDS);
+            assertEquals(2, second.number());
         }
     }
 

@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -49,6 +50,13 @@ class NodeServiceTest {
         assertEquals(Code.OK, complete(done().setBody(ByteString.copyFromUtf8("answer")).build()));
 
         assertEquals(Blob.of("answer".getBytes(StandardCharsets.UTF_8)), completed.getFirst().body());
+    }
+
+    @Test
+    void metaOfTheAttemptComesBack() {
+        assertEquals(Code.OK, complete(done().putMeta("partition-key", "a.com").setBody(ByteString.EMPTY).build()));
+
+        assertEquals(Map.of("partition-key", "a.com"), completed.getFirst().meta());
     }
 
     @Test
