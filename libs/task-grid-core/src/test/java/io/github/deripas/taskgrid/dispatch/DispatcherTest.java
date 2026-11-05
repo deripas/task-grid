@@ -89,8 +89,9 @@ class DispatcherTest {
         }
 
         @Override
-        public void complete(AttemptResult result) {
+        public CompletionStage<Void> complete(AttemptResult result) {
             completed.add(result);
+            return CompletableFuture.completedFuture(null);
         }
 
         @Override

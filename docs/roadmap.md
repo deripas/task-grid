@@ -31,7 +31,7 @@ Agreed decisions - [decisions.md](decisions.md), layout - [structure.md](structu
    robots.txt, cooldown after 429 - through `DelayPolicy`, later. Requirements -
    `crawler-maket/domain-queue-requirements.md`. Moved into the queue in 14a
    ([D24](decisions.md#d24-queue-and-worker-are-decoupled-dispatcher-connects-them)), the module is gone.
-13. `[x]` **url-manager: RabbitMQ with reply_to.** Typed client protocol (`url-manager-api`), Spring AMQP; two ways
+13. `[x]` **url-manager: RabbitMQ with reply_to.** Typed client protocol (`url_manager.proto`, at first a module `url-manager-api`), Spring AMQP; two ways
    of handling by `ack`: `after-submit` (target: acknowledged once queued, the reply from the result callback of the
    queue, `TaskQueue.onResult`) and `after-reply` (transitional, for the in-memory queue: acknowledged after the
    reply is confirmed; requests of a host sharded to one instance by a consistent-hash exchange).
@@ -46,6 +46,21 @@ Agreed decisions - [decisions.md](decisions.md), layout - [structure.md](structu
      pauses and deadlines), `submit` completes after persist, `onResult` delivers until success; the meta of the
      task comes back with the result (`AttemptResult.meta`, `Complete.meta`) to find the partition on any node.
      Tests on an in-memory journal; the Cassandra / ScyllaDB plugin comes with url-manager in 14c.
-   - `[ ]` **14c. Clustered url-manager.** Sidecar sessions with all nodes, cluster result store, `after-submit`
-     as the main mode.
-15. `[ ]` **Later.** Spring Boot starter, gRPC long polling, more metrics (queue, attempts).
+   - `[x]` **14c. Clustered url-manager.** Requests over RabbitMQ (`after-submit`) in a cluster of url-managers,
+     docker-compose stand.
+     - `[x]` **14c-1. Cluster mode.** `url-manager.queue: memory | cluster`; cluster - `PekkoTaskQueue`, journal in
+       ScyllaDB (`pekko-persistence-cassandra`), seed nodes, SBR; `after-submit` only, `POST /fetch` off. A result is
+       taken only once the queue has it (`complete` returns a stage, `Complete` is OK after the journal).
+       `url-manager-api` folded into url-manager.
+     - `[x]` **14c-2. Sidecar sessions with every node.** DNS of `NODE_ADDRESS` -> a session per address, shared credit,
+       capacity share for the metrics. Attempts in progress belong to the sidecar process (`instance_id`), not to
+       the session: a reconnect keeps them, a lost sidecar's attempts go to other sidecars after `rejoin-timeout`
+       without a queue retry; results go to the node of the attempt, to another node when it is gone (D29).
+     - `[x]` **14c-3. docker-compose stand.** `crawler-example/stand`, profiles `memory` (queue per instance behind
+       a consistent-hash exchange, `after-reply`) and `cluster` (Pekko + ScyllaDB, one queue, `after-submit`); sidecars
+       + fetchers as pods, SeaweedFS, a fake site. `StandIT` (`make stand-it`): a url-manager stopped in the middle of
+       work, every page comes, crawl-delay holds per host (D30).
+15. `[ ]` **Later.** Spring Boot starter, more metrics (queue, attempts).
+   - **To discuss: client protocol over gRPC with long polling** - clients submit tasks, subscribe to (poll) their
+     results, ack / nack them; awaiting a result on any node of the cluster (`POST /fetch`, `after-reply` in cluster
+     mode) is the same problem. Whether it belongs to task-grid itself and whether it is built on Pekko directly.

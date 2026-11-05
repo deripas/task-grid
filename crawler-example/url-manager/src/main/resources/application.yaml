@@ -28,11 +28,21 @@ management:
         include: health,prometheus
 
 url-manager:
+  # memory - tasks in this process; cluster - in the Pekko cluster of url-managers, journal in ScyllaDB
+  queue: memory
+  cluster:
+    host: ${PEKKO_HOST:127.0.0.1}
+    port: ${PEKKO_PORT:25520}
+    # host:port of the nodes to join through, comma separated; empty - this node alone
+    seed-nodes: ${PEKKO_SEED_NODES:}
+    contact-points: ${SCYLLA_CONTACT_POINTS:127.0.0.1:9042}
+    datacenter: ${SCYLLA_DATACENTER:datacenter1}
   grpc-port: 9090
   # sidecars ping every 10s (NODE_KEEPALIVE_TIME): permit-time must not be above it
+  # the node pings as often: a sidecar gone without closing its connection is found in ~15s
   grpc-keepalive:
-    time: 30s
-    timeout: 10s
+    time: 10s
+    timeout: 5s
     permit-time: 5s
   default-timeout: 60s
   max-timeout: 10m

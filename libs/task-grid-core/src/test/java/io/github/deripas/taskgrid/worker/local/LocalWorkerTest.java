@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.RejectedExecutionException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -32,7 +33,10 @@ class LocalWorkerTest {
 
     @BeforeEach
     void subscribe() {
-        worker.onComplete(results::add);
+        worker.onComplete(result -> {
+            results.add(result);
+            return CompletableFuture.completedFuture(null);
+        });
     }
 
     @Test

@@ -16,12 +16,15 @@ import io.github.deripas.crawler.urlmanager.metrics.PoolMetrics;
 import io.github.deripas.taskgrid.dispatch.Dispatcher;
 import io.github.deripas.taskgrid.queue.DelayPolicy;
 import io.github.deripas.taskgrid.queue.QueueSettings;
+import io.github.deripas.taskgrid.queue.TaskQueue;
 import io.github.deripas.taskgrid.queue.memory.MemoryTaskQueue;
+import io.github.deripas.taskgrid.queue.pekko.PekkoTaskQueue;
 import io.github.deripas.taskgrid.result.ResultStore;
 import io.github.deripas.taskgrid.result.memory.MemoryResultStore;
 import io.github.deripas.taskgrid.worker.remote.RemoteSettings;
 import io.github.deripas.taskgrid.worker.remote.RemoteWorker;
 import io.github.deripas.taskgrid.worker.remote.grpc.NodeService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.core.Queue;
 import org.springframework.amqp.core.QueueBuilder;
 import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
@@ -29,6 +32,7 @@ import org.springframework.amqp.rabbit.config.SimpleRabbitListenerEndpoint;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBooleanProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -61,10 +65,16 @@ public class UrlManagerConfiguration {
     }
 
     @Bean
-    Node node(UrlManagerProperties properties, ResultStore results) {
-        final MemoryTaskQueue queue = new MemoryTaskQueue(new QueueSettings(properties.maxAttempts(), properties.attemptTimeout()),
-            DelayPolicy.fixed(properties.crawlDelay()), results);
-        final RemoteWorker remote = new RemoteWorker(RemoteSettings.DEFAULTS, Clock.systemUTC());
+    RemoteWorker remoteWorker() {
+        return new RemoteWorker(RemoteSettings.DEFAULTS, Clock.systemUTC());
+    }
+
+    /**
+     * The queue of {@code url-manager.queue} connected to the worker; before the node joins the cluster, so that the
+     * partitions recovering here find the worker.
+     */
+    @Bean
+    Node node(TaskQueue queue, RemoteWorker remote) {
         Dispatcher.connect(queue, remote);
         return new Node(queue, remote);
     }
@@ -97,9 +107,9 @@ public class UrlManagerConfiguration {
         return new FetchService(node.queue(), results, new ProtoPageCodec(), blobs);
     }
 
-    @Bean
-    FetchController fetchController(FetchService service, UrlManagerProperties properties) {
-        return new FetchController(service, properties.defaultTimeout(), properties.maxTimeout());
+
+    private static QueueSettings settings(UrlManagerProperties properties) {
+        return new QueueSettings(properties.maxAttempts(), properties.attemptTimeout());
     }
 
     /**
@@ -116,6 +126,43 @@ public class UrlManagerConfiguration {
             .credentialsProvider(credentials)
             .httpClientBuilder(Apache5HttpClient.builder())
             .build();
+    }
+
+    /**
+     * Tasks in this process; {@code POST /fetch} waits for its page here.
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnProperty(name = "url-manager.queue", havingValue = "memory", matchIfMissing = true)
+    static class Memory {
+        @Bean
+        MemoryTaskQueue taskQueue(UrlManagerProperties properties, ResultStore results) {
+            return new MemoryTaskQueue(settings(properties), DelayPolicy.fixed(properties.crawlDelay()), results);
+        }
+
+        @Bean
+        FetchController fetchController(FetchService service, UrlManagerProperties properties) {
+            return new FetchController(service, properties.defaultTimeout(), properties.maxTimeout());
+        }
+    }
+
+    /**
+     * Tasks in the Pekko cluster of url-managers, journal in ScyllaDB. No {@code POST /fetch}: a result may finish on
+     * another node than the one waiting for it.
+     */
+    @Slf4j
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnProperty(name = "url-manager.queue", havingValue = "cluster")
+    static class Cluster {
+        @Bean
+        PekkoCluster pekkoCluster(UrlManagerProperties properties) {
+            log.info("Cluster mode: POST /fetch is off, requests come over RabbitMQ");
+            return new PekkoCluster(properties.cluster());
+        }
+
+        @Bean
+        PekkoTaskQueue taskQueue(PekkoCluster cluster, UrlManagerProperties properties, ResultStore results) {
+            return PekkoTaskQueue.start(cluster.system(), settings(properties), DelayPolicy.fixed(properties.crawlDelay()), results);
+        }
     }
 
     /**

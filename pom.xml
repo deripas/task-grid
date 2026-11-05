@@ -35,6 +35,8 @@
         <zstd-jni.version>1.5.7-25</zstd-jni.version>
         <pekko.version>1.7.1</pekko.version>
         <scala.binary.version>2.13</scala.binary.version>
+        <!-- the version Pekko is built with; other Scala libraries (pekko-persistence-cassandra) bring older ones -->
+        <scala.version>2.13.18</scala.version>
 
         <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
         <maven-surefire-plugin.version>3.6.1</maven-surefire-plugin.version>
@@ -59,6 +61,11 @@
                 <groupId>io.github.deripas</groupId>
                 <artifactId>task-grid-queue-pekko</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.scala-lang</groupId>
+                <artifactId>scala-library</artifactId>
+                <version>${scala.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.apache.pekko</groupId>

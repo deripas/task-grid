@@ -73,6 +73,7 @@ func Load() (Config, error) {
 		{"DRAIN_TIMEOUT", "60s", &c.Sidecar.DrainTimeout},
 		{"NODE_KEEPALIVE_TIME", "10s", &c.Node.KeepaliveTime},
 		{"NODE_KEEPALIVE_TIMEOUT", "5s", &c.Node.KeepaliveTimeout},
+		{"NODE_RESOLVE_INTERVAL", "10s", &c.Sidecar.ResolveInterval},
 		{"HANDLER_KEEPALIVE_TIME", "30s", &c.Handler.KeepaliveTime},
 		{"HANDLER_KEEPALIVE_TIMEOUT", "10s", &c.Handler.KeepaliveTimeout},
 	} {

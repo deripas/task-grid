@@ -1,5 +1,6 @@
-// End-to-end tests of the sidecar: the core with the real adapters node and handler against a fake node over gRPC
-// and the test handler. External package: the node adapter imports sidecar itself.
+// End-to-end tests of the sidecar: the core with the real adapters node and handler against fake nodes over gRPC
+// and the test handler; addresses of the nodes come from a fake resolver. External package: the node adapter imports
+// sidecar itself.
 package sidecar_test
 
 import (
@@ -9,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -37,8 +39,10 @@ const (
 type fakeNode struct {
 	remotev1.UnimplementedNodeServer
 	addr string
+	srv  *grpc.Server
 
 	hellos         chan *remotev1.Hello
+	shares         chan float64
 	completes      chan *remotev1.CompleteRequest
 	halfClosed     chan struct{}
 	failCompletes  atomic.Int32 // that many first Complete calls answer UNAVAILABLE
@@ -66,7 +70,8 @@ type fakeSession struct {
 func startNode(t *testing.T) *fakeNode {
 	t.Helper()
 	n := &fakeNode{
-		hellos:     make(chan *remotev1.Hello, 10),
+		hellos:     make(chan *remotev1.Hello, 100),
+		shares:     make(chan float64, 100),
 		completes:  make(chan *remotev1.CompleteRequest, 100),
 		halfClosed: make(chan struct{}, 10),
 	}
@@ -75,11 +80,39 @@ func startNode(t *testing.T) *fakeNode {
 		t.Fatal(err)
 	}
 	n.addr = lis.Addr().String()
-	srv := grpc.NewServer()
-	remotev1.RegisterNodeServer(srv, n)
-	go srv.Serve(lis)
-	t.Cleanup(srv.Stop)
+	n.srv = grpc.NewServer()
+	remotev1.RegisterNodeServer(n.srv, n)
+	go n.srv.Serve(lis)
+	t.Cleanup(n.srv.Stop)
 	return n
+}
+
+// hello - the next Hello the node got.
+func (n *fakeNode) hello(t *testing.T) *remotev1.Hello {
+	t.Helper()
+	select {
+	case h := <-n.hellos:
+		return h
+	case <-time.After(wait):
+		t.Fatal("no hello")
+		return nil
+	}
+}
+
+// awaitShare waits until the node is told the share.
+func (n *fakeNode) awaitShare(t *testing.T, want float64) {
+	t.Helper()
+	deadline := time.After(wait)
+	for {
+		select {
+		case got := <-n.shares:
+			if got == want {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("no share %v", want)
+		}
+	}
 }
 
 // push queues attempts for the sidecar.
@@ -115,6 +148,9 @@ func (n *fakeNode) Connect(stream grpc.BidiStreamingServer[remotev1.SidecarMessa
 		}
 		if err != nil {
 			return err
+		}
+		if sh := msg.GetShare(); sh != nil {
+			n.shares <- sh.Capacity
 		}
 		if c := msg.GetCredit(); c != nil {
 			n.mu.Lock()
@@ -212,8 +248,34 @@ func (b *fakeBlobs) Put(_ context.Context, taskID string, data []byte) (domain.B
 	return domain.BlobRef{Location: location, Size: int64(len(data)), Sha256: "sha"}, nil
 }
 
+// fakeNodes - the addresses of the nodes as the test sets them; clients are real node adapters.
+type fakeNodes struct {
+	mu    sync.Mutex
+	addrs []string
+}
+
+func (r *fakeNodes) Resolve(context.Context) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.addrs), nil
+}
+
+func (r *fakeNodes) Dial(address string) (sidecar.Node, error) {
+	return node.New(node.Config{Address: address, KeepaliveTime: time.Minute, KeepaliveTimeout: 10 * time.Second})
+}
+
+// set - the nodes behind the address from now on.
+func (r *fakeNodes) set(nodes ...*fakeNode) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.addrs = nil
+	for _, n := range nodes {
+		r.addrs = append(r.addrs, n.addr)
+	}
+}
+
 type harness struct {
-	node    *fakeNode
+	nodes   *fakeNodes
 	handler *handlertest.Handler
 	done    chan error
 	cancel  context.CancelFunc
@@ -221,13 +283,13 @@ type harness struct {
 
 func start(t *testing.T, n *fakeNode, capacity int, drainTimeout time.Duration) *harness {
 	t.Helper()
-	return startWith(t, n, capacity, drainTimeout, nil)
+	return startWith(t, []*fakeNode{n}, capacity, drainTimeout, nil)
 }
 
-// startWith - with blob storage; blobs nil - none.
+// startWith - with the nodes and blob storage; blobs nil - none.
 func startWith(
 	t *testing.T,
-	n *fakeNode,
+	nodes []*fakeNode,
 	capacity int,
 	drainTimeout time.Duration,
 	blobs *fakeBlobs,
@@ -239,19 +301,17 @@ func startWith(
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { hc.Close() })
-	nc, err := node.New(node.Config{Address: n.addr, KeepaliveTime: time.Minute, KeepaliveTimeout: 10 * time.Second})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { nc.Close() })
+	resolver := &fakeNodes{}
+	resolver.set(nodes...)
 	s := sidecar.New(sidecar.Config{
-		WorkerID:      "worker-1",
-		Kind:          "echo",
-		Capacity:      capacity,
-		InlineMax:     inlineMax,
-		RetryInterval: 20 * time.Millisecond,
-		DrainTimeout:  drainTimeout,
-	}, nc, hc, port(blobs), slog.New(slog.DiscardHandler))
+		WorkerID:        "worker-1",
+		Kind:            "echo",
+		Capacity:        capacity,
+		InlineMax:       inlineMax,
+		RetryInterval:   20 * time.Millisecond,
+		DrainTimeout:    drainTimeout,
+		ResolveInterval: 20 * time.Millisecond,
+	}, resolver, hc, port(blobs), slog.New(slog.DiscardHandler))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- s.Run(ctx) }()
@@ -259,7 +319,7 @@ func startWith(
 		cancel()
 		s.Close()
 	})
-	return &harness{node: n, handler: h, done: done, cancel: cancel}
+	return &harness{nodes: resolver, handler: h, done: done, cancel: cancel}
 }
 
 // port - nil *fakeBlobs as a nil interface: no storage.
@@ -298,8 +358,8 @@ func TestAttemptsAreExecutedWithinCapacity(t *testing.T) {
 	for i := range 6 {
 		n.push(attempt(t, fmt.Sprint("t", i), handlertest.Call{Data: fmt.Sprint("d", i), SleepMs: 50}))
 	}
-	hello := <-n.hellos
-	if hello.WorkerId != "worker-1" || hello.Kind != "echo" || hello.Capacity != 2 {
+	hello := n.hello(t)
+	if hello.WorkerId != "worker-1" || hello.InstanceId == "" || hello.Kind != "echo" || hello.Capacity != 2 {
 		t.Fatalf("hello %v", hello)
 	}
 	for range 6 {
@@ -437,23 +497,87 @@ func TestDrainTimeoutAbandonsWork(t *testing.T) {
 	}
 }
 
+// The same process reconnects with the same instance id: the node keeps its attempts in progress.
 func TestReconnectsAfterNodeClosesSession(t *testing.T) {
 	n := startNode(t)
 	n.closeAtOnce.Store(true)
 	start(t, n, 1, wait)
-	for i := range 2 {
-		select {
-		case <-n.hellos:
-		case <-time.After(wait):
-			t.Fatalf("no hello %d", i+1)
+	first, second := n.hello(t), n.hello(t)
+	if first.InstanceId == "" || second.InstanceId != first.InstanceId {
+		t.Fatalf("instance ids %q, %q", first.InstanceId, second.InstanceId)
+	}
+}
+
+// A session with each node: one pool of slots, each result to the node of its attempt, each node told its share.
+func TestSessionWithEveryNodeSharesTheSlots(t *testing.T) {
+	a, b := startNode(t), startNode(t)
+	h := startWith(t, []*fakeNode{a, b}, 2, wait, nil)
+	ha, hb := a.hello(t), b.hello(t)
+	if ha.WorkerId != hb.WorkerId || ha.InstanceId != hb.InstanceId {
+		t.Fatalf("hellos %v, %v", ha, hb)
+	}
+	a.awaitShare(t, 1)
+	b.awaitShare(t, 1)
+	for i := range 4 {
+		a.push(attempt(t, fmt.Sprint("a", i), handlertest.Call{SleepMs: 30}))
+		b.push(attempt(t, fmt.Sprint("b", i), handlertest.Call{SleepMs: 30}))
+	}
+	for _, n := range []*fakeNode{a, b} {
+		for range 4 {
+			if r := n.result(t); r.Status != remotev1.Status_DONE || r.TaskId[:1] != map[*fakeNode]string{a: "a", b: "b"}[n] {
+				t.Fatalf("result %v at the wrong node", r)
+			}
 		}
+	}
+	if p := h.handler.Peak(); p > 2 {
+		t.Fatalf("peak %d concurrent calls, want at most the capacity 2", p)
+	}
+	if err := h.stop(t); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A node gone from the address is not reconnected once its session ends.
+func TestNodeGoneFromTheAddressIsNotReconnected(t *testing.T) {
+	a, b := startNode(t), startNode(t)
+	b.closeAtOnce.Store(true)
+	h := startWith(t, []*fakeNode{a, b}, 1, wait, nil)
+	b.hello(t)
+	h.nodes.set(a)
+	time.Sleep(100 * time.Millisecond) // the address is resolved again; a connect in flight ends
+	for len(b.hellos) > 0 {
+		<-b.hellos
+	}
+	select {
+	case <-b.hellos:
+		t.Fatal("reconnected to a node gone from the address")
+	case <-time.After(1500 * time.Millisecond): // longer than the pause before a reconnect
+	}
+	a.awaitShare(t, 1)
+}
+
+// The node of the attempt is gone: the result goes to another node (a cluster finds the task by the meta).
+func TestResultGoesToAnotherNodeWhenItsNodeIsGone(t *testing.T) {
+	a, b := startNode(t), startNode(t)
+	h := startWith(t, []*fakeNode{a, b}, 1, wait, nil)
+	a.hello(t)
+	b.hello(t)
+	b.push(attempt(t, "t1", handlertest.Call{SleepMs: 300}))
+	deadline := time.Now().Add(wait)
+	for h.handler.Calls() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	h.nodes.set(a)
+	b.srv.Stop()
+	if r := a.result(t); r.TaskId != "t1" || r.Status != remotev1.Status_DONE {
+		t.Fatalf("result %v", r)
 	}
 }
 
 func TestAnswerUpToInlineMaxIsInline(t *testing.T) {
 	n := startNode(t)
 	blobs := &fakeBlobs{puts: map[string][]byte{}}
-	startWith(t, n, 1, wait, blobs)
+	startWith(t, []*fakeNode{n}, 1, wait, blobs)
 	n.push(attempt(t, "t1", handlertest.Call{PadBytes: inlineMax / 2}))
 	r := n.result(t)
 	if r.Status != remotev1.Status_DONE || r.GetBlob() != nil || len(r.GetBody()) == 0 || len(blobs.puts) != 0 {
@@ -464,7 +588,7 @@ func TestAnswerUpToInlineMaxIsInline(t *testing.T) {
 func TestAnswerAboveInlineMaxGoesToBlobStorage(t *testing.T) {
 	n := startNode(t)
 	blobs := &fakeBlobs{puts: map[string][]byte{}}
-	startWith(t, n, 1, wait, blobs)
+	startWith(t, []*fakeNode{n}, 1, wait, blobs)
 	n.push(attempt(t, "t1", handlertest.Call{Data: "big", PadBytes: 2 * inlineMax}))
 	r := n.result(t)
 	ref := r.GetBlob()
@@ -491,7 +615,7 @@ func TestBlobStorageFailureIsRetried(t *testing.T) {
 	n := startNode(t)
 	blobs := &fakeBlobs{puts: map[string][]byte{}}
 	blobs.fail.Store(true)
-	startWith(t, n, 1, wait, blobs)
+	startWith(t, []*fakeNode{n}, 1, wait, blobs)
 	n.push(attempt(t, "t1", handlertest.Call{PadBytes: 2 * inlineMax}))
 	r := n.result(t)
 	if r.Status != remotev1.Status_RETRY || r.Error == "" {

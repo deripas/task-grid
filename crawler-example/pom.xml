@@ -21,13 +21,15 @@
     <modules>
         <module>fetcher-api</module>
         <module>fetcher</module>
-        <module>url-manager-api</module>
         <module>url-manager</module>
     </modules>
 
     <properties>
         <wiremock.version>3.13.2</wiremock.version>
         <awssdk.version>2.57.9</awssdk.version>
+        <pekko-persistence-cassandra.version>1.1.0</pekko-persistence-cassandra.version>
+        <maven-jar-plugin.version>3.5.1</maven-jar-plugin.version>
+        <maven-dependency-plugin.version>3.11.0</maven-dependency-plugin.version>
     </properties>
 
     <dependencyManagement>
@@ -35,11 +37,6 @@
             <dependency>
                 <groupId>io.github.deripas</groupId>
                 <artifactId>fetcher-api</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.github.deripas</groupId>
-                <artifactId>url-manager-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -78,6 +75,12 @@
                 <version>${awssdk.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
+            </dependency>
+            <!-- journal of the cluster mode of url-manager: Cassandra / ScyllaDB -->
+            <dependency>
+                <groupId>org.apache.pekko</groupId>
+                <artifactId>pekko-persistence-cassandra_${scala.binary.version}</artifactId>
+                <version>${pekko-persistence-cassandra.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.wiremock</groupId>

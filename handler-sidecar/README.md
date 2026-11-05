@@ -37,12 +37,13 @@ Handler -> sidecar: the status of the attempt follows the gRPC status, the respo
 
 | | |
 |---|---|
-| Session | one `Connect` stream with the node at `NODE_ADDRESS`: `Hello` (`WORKER_ID`, `KIND`, `CAPACITY`), then credit. Closed by the node with OK - reconnect at once; broken, or the session lived less than a second - after 0.5-1 s |
-| Keepalive | HTTP/2 pings every `NODE_KEEPALIVE_TIME`, also without calls; no answer within `NODE_KEEPALIVE_TIMEOUT` - the connection is closed, the session breaks and the sidecar reconnects. A connection that is open but carries nothing (a hung network path) is found in ~15 s instead of never. The node pings too and drops the session of a hung sidecar: its attempts are retried |
-| Credit | slots belong to the sidecar: unused credit plus attempts in progress <= `CAPACITY`, granted by the demand of the node; surplus credit returned by the node frees the slot. An attempt beyond credit is not executed - `RETRY` |
+| Nodes | `NODE_ADDRESS` is resolved every `NODE_RESOLVE_INTERVAL` (IPv4 addresses if any, else IPv6): a session with each node. A node gone from the name keeps its session until it ends and is not reconnected |
+| Session | one `Connect` stream with a node: `Hello` (`WORKER_ID`, `KIND`, `CAPACITY`, `instance_id` - random per start of the process), then credit and `Share`. Closed by the node with OK - reconnect at once; broken, or the session lived less than a second - after 0.5-1 s. Attempts in progress belong to the process: a reconnect with the same `instance_id` keeps them; the node gives the attempts of a sidecar that does not come back to others |
+| Keepalive | HTTP/2 pings every `NODE_KEEPALIVE_TIME`, also without calls; no answer within `NODE_KEEPALIVE_TIMEOUT` - the connection is closed, the session breaks and the sidecar reconnects. A connection that is open but carries nothing (a hung network path) is found in ~15 s instead of never. The node pings too and drops the session of a hung sidecar |
+| Credit | slots belong to the sidecar, one pool for all the nodes: unused credit plus attempts in progress <= `CAPACITY`, granted by the demand of the nodes; surplus credit returned by a node frees the slot. An attempt beyond credit is not executed - `RETRY`. Each node is told its share `CAPACITY / sessions` (`Share`) for its load metrics |
 | Large result | a response above `INLINE_MAX` is put into the S3 bucket `BLOB_S3_BUCKET` (zstd) under `<BLOB_PREFIX><task id>/<random>`, within the slot of the attempt; `Complete` carries `BlobRef` (`s3://<bucket>/<key>`, size and sha256 of the response before compression). Storage fails - `RETRY`. Objects are not deleted here: give the bucket a lifecycle rule (TTL) on the prefix |
-| Result | `Complete` with the meta of the attempt (the node finds the partition of the task by it) repeated every `RETRY_INTERVAL` until OK; `INVALID_ARGUMENT` from the node - given up |
-| SIGTERM | drain: no more credit, half-close of the stream; attempts in progress are finished and delivered, the node closes the stream, exit code 0. After `DRAIN_TIMEOUT` the work is abandoned and the exit code is 1: the stop was not clean |
+| Result | `Complete` with the meta of the attempt (a node finds the partition of the task by it) to the node of the attempt, repeated every `RETRY_INTERVAL` until OK; when that node is gone from the name - to the other nodes in turn. `INVALID_ARGUMENT` from the node - given up |
+| SIGTERM | drain: no more credit, half-close of the streams; attempts in progress are finished and delivered, the nodes close the streams, exit code 0. After `DRAIN_TIMEOUT` the work is abandoned and the exit code is 1: the stop was not clean |
 
 ## Deployment and stop order
 
@@ -88,7 +89,8 @@ DRAIN_TIMEOUT + margin    <  terminationGracePeriodSeconds (90s)
 
 | Variable | Default | |
 |---|---|---|
-| `NODE_ADDRESS` | `localhost:9090` | `host:port` of the node |
+| `NODE_ADDRESS` | `localhost:9090` | `host:port` of the nodes: a DNS name of all of them (k8s headless service) or one address |
+| `NODE_RESOLVE_INTERVAL` | `10s` | how often `NODE_ADDRESS` is resolved again |
 | `WORKER_ID` | hostname | stable name of the instance (pod name) |
 | `KIND` | - (required) | kind of tasks the handler executes |
 | `CAPACITY` | `8` | attempts at once |
@@ -147,11 +149,12 @@ the bucket and checked.
 Tests: credit (`internal/sidecar/credit`), status mapping and metadata (`internal/handler`), settings
 (`internal/config`), format of the objects (`internal/blob`); end to end (`internal/sidecar`: core + real adapters + a fake node over gRPC + the test handler) -
 execution within capacity with metadata, failures, repeat of `Complete` until OK and no repeat when rejected,
-an attempt beyond credit, drain with an attempt in progress, drain timeout, reconnect, large results (blob,
+an attempt beyond credit, drain with an attempt in progress, drain timeout, reconnect with the same instance id,
+sessions with two nodes (shared slots, shares, results to their nodes), a node gone from the name (no reconnect,
+its results to another node), resolving of the address (`internal/node`), large results (blob,
 no storage, storage failure) with a fake storage.
 
 ## Not yet
 
-- Sessions with every node of a cluster (DNS), lease (`Extend`), restart detection - with the cluster engine.
 - Large payloads (from the node to the handler) in blob storage; `RATE_LIMITED` / `RELEASED` statuses; metrics and
   health probe.

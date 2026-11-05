@@ -59,10 +59,17 @@ public final class LocalWorker implements Worker {
         callbacks.add(callback);
     }
 
+    /**
+     * Nothing to keep in-process: a callback that failed is logged.
+     */
     private void report(AttemptResult result) {
         for (AttemptCallback callback : callbacks) {
             try {
-                callback.complete(result);
+                callback.complete(result).whenComplete((ignored, e) -> {
+                    if (e != null) {
+                        log.error("Attempt callback failed: task={} attempt={}", result.taskId(), result.attempt(), e);
+                    }
+                });
             } catch (RuntimeException e) {
                 log.error("Attempt callback failed: task={} attempt={}", result.taskId(), result.attempt(), e);
             }

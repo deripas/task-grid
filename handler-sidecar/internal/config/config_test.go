@@ -17,7 +17,7 @@ func TestDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Node.Address != "localhost:9090" || c.Node.KeepaliveTime != 10*time.Second || c.Node.KeepaliveTimeout != 5*time.Second ||
+	if c.Node.Address != "localhost:9090" || c.Node.KeepaliveTime != 10*time.Second || c.Node.KeepaliveTimeout != 5*time.Second || c.Sidecar.ResolveInterval != 10*time.Second ||
 		c.Handler.KeepaliveTime != 30*time.Second || c.Handler.KeepaliveTimeout != 10*time.Second || c.Sidecar.Capacity != 8 || c.Sidecar.WorkerID == "" ||
 		c.Sidecar.RetryInterval != time.Second || c.Sidecar.DrainTimeout != time.Minute ||
 		c.Handler.Target != "localhost:50051" || c.Handler.Timeout != 10*time.Minute ||

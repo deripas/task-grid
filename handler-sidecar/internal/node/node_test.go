@@ -59,7 +59,7 @@ func open(t *testing.T, cfg Config) sidecar.Session {
 	t.Cleanup(func() { _ = c.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	s, err := c.Open(ctx, sidecar.Hello{WorkerID: "w", Kind: "k", Capacity: 1})
+	s, err := c.Open(ctx, sidecar.Hello{WorkerID: "w", InstanceID: "i", Kind: "k", Capacity: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,5 +152,23 @@ func (p *proxy) pipe(from, to net.Conn) {
 		if err != nil {
 			return
 		}
+	}
+}
+
+// An IP literal is the only node; a name resolves to its IPv4 addresses when it has any (localhost: 127.0.0.1, not
+// also ::1 - two sessions of one sidecar with one node would supersede each other).
+func TestResolve(t *testing.T) {
+	for address, want := range map[string]string{"10.0.0.7:9090": "10.0.0.7:9090", "localhost:9090": "127.0.0.1:9090"} {
+		p, err := NewPool(Config{Address: address})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := p.Resolve(context.Background())
+		if err != nil || len(got) != 1 || got[0] != want {
+			t.Fatalf("%s: %v %v, want [%s]", address, got, err, want)
+		}
+	}
+	if _, err := NewPool(Config{Address: "no-port"}); err == nil {
+		t.Fatal("address without a port accepted")
 	}
 }

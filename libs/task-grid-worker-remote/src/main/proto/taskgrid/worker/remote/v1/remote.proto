@@ -9,12 +9,19 @@
 // Credit and demand are absolute values (limit / target with a version), not increments: a lost or repeated
 // message breaks nothing, and the node returns surplus credit with the same Demand.
 //
-// A session is one Connect stream. A new session of the same worker_id supersedes the previous one (its stream
-// is closed with OK). When a session breaks (cancellation, error), its attempts in progress are retried by the node:
-// a result sent for them later is accepted and ignored.
+// A session is one Connect stream. A sidecar keeps a session with each node (DNS name -> every address) and splits
+// its slots among them. Attempts in progress belong to the sidecar process (worker_id + instance_id), not to
+// the session: the result of an attempt may come through any session, and through any node - meta finds the queue
+// partition of the task.
+// - A new session of the same worker_id supersedes the previous one as the channel (its stream is closed with OK);
+//   with the same instance_id the attempts in progress stay, with another one (the process was restarted and has
+//   lost them) the node gives them to other sidecars at once.
+// - A session breaks (cancellation, error): its attempts wait for the sidecar to reconnect for a while (rejoin
+//   timeout of the node), then go to other sidecars with the same attempt number.
 //
-// Shutdown of the sidecar (drain): stop granting credit and half-close the stream. The node sends no more attempts,
-// waits for the results of the attempts in progress (Complete) and then closes the stream with OK.
+// Shutdown of the sidecar (drain): stop granting credit and half-close the streams. The node sends no more attempts,
+// waits for the results of the attempts in progress (Complete) and then closes the stream with OK; a draining sidecar
+// that breaks the stream is not waited for.
 syntax = "proto3";
 
 package taskgrid.worker.remote.v1;
@@ -24,8 +31,8 @@ option java_package = "io.github.deripas.taskgrid.worker.remote.v1";
 option go_package = "github.com/deripas/task-grid/handler-sidecar/internal/gen/remote/v1;remotev1";
 
 service Node {
-  // Session of a sidecar with the node. The first message of the sidecar is Hello, then Credit as slots free up;
-  // the half-close of the sidecar is drain. The node sends attempts within the credit and its demand when it changes.
+  // Session of a sidecar with the node. The first message of the sidecar is Hello, then Credit as slots free up and
+  // Share when the number of its sessions changes; the half-close of the sidecar is drain. The node sends attempts within the credit and its demand when it changes.
   rpc Connect(stream SidecarMessage) returns (stream NodeMessage);
 
   // Result of an attempt. OK - the result is taken (at-least-once): until OK the sidecar keeps the result
@@ -37,6 +44,7 @@ message SidecarMessage {
   oneof msg {
     Hello hello = 1;
     Credit credit = 2;
+    Share share = 3;
   }
 }
 
@@ -45,12 +53,19 @@ message Hello {
   string worker_id = 1;     // stable name of the sidecar instance (pod name); marks its results
   string kind = 2;          // kind of tasks the handler executes
   int32 capacity = 3;       // attempts the handler runs at once: upper bound of the demand
+  string instance_id = 4;   // random value of the process, new on each start
 }
 
 // The node may send attempts with numbers up to limit (numbered from 1 in each session).
 message Credit {
   int64 limit = 1;
   int64 version = 2;        // grows with each Credit of the session
+}
+
+// Share of the capacity the node counts in its load (pool metrics): capacity / number of sessions of the sidecar,
+// so that the sum over the nodes is the capacity of the pool. Until the first Share - the whole capacity.
+message Share {
+  double capacity = 1;
 }
 
 message NodeMessage {

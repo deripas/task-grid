@@ -24,18 +24,22 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.testcontainers.Testcontainers;
+import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.images.builder.ImageFromDockerfile;
+import org.testcontainers.utility.MountableFile;
 
 import java.io.IOException;
+import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -63,6 +67,8 @@ class UrlManagerIT {
     private static final String BUCKET = "results";
     private static final String REQUESTS = "url-manager.fetch";
     private static final String SUBMIT_REQUESTS = "url-manager.fetch.after-submit";
+    private static final String CLUSTER_REQUESTS = "url-manager.fetch.cluster";
+    private static final int CQL_PORT = 9042;
     private static final Duration SLOW = Duration.ofMillis(300);
     private static final Duration CRAWL_DELAY = Duration.ofMillis(500);
     private static final ImageFromDockerfile SIDECAR_IMAGE = new ImageFromDockerfile("task-grid/handler-sidecar-it", false)
@@ -309,10 +315,62 @@ class UrlManagerIT {
     }
 
     /**
+     * Cluster mode on ScyllaDB: requests over RabbitMQ (after-submit) survive a restart of url-manager. A is fetched
+     * while the node stops, B waits behind it for the crawl-delay of the host; a new node (the same gRPC port, the same
+     * journal) recovers the partition, takes the result of A the sidecar sends again, replies to A, then fetches B.
+     */
+    @Test
+    void clusterModeKeepsRequestsOverARestart() throws Exception {
+        site.stubFor(get("/cluster/a").willReturn(aResponse().withFixedDelay(3_000).withBody("page a")));
+        site.stubFor(get("/cluster/b").willReturn(aResponse().withBody("page b")));
+        try (GenericContainer<?> scylla = new GenericContainer<>("scylladb/scylla:2026.3")
+            .withCommand("--smp", "1", "--memory", "512M", "--overprovisioned", "1", "--developer-mode", "1")
+            .withExposedPorts(CQL_PORT)
+            .waitingFor(Wait.forLogMessage(".*(Starting listening for CQL clients|init - serving).*", 1)
+                .withStartupTimeout(Duration.ofMinutes(3)))) {
+            scylla.start();
+            applySchema(scylla);
+            final int grpcPort = freePort();
+            final String[] cluster = {
+                "--url-manager.queue=cluster",
+                "--url-manager.grpc-port=" + grpcPort,
+                "--url-manager.cluster.port=0",
+                "--url-manager.cluster.contact-points=" + scylla.getHost() + ":" + scylla.getMappedPort(CQL_PORT)};
+            ConfigurableApplicationContext node = startUrlManager(CLUSTER_REQUESTS, "after-submit", cluster);
+            final GenericContainer<?> clusterSidecar = startSidecar(node, "fetcher-it-cluster");
+            try {
+                final String host = "http://127.0.0.1:" + site.port();
+                final CompletableFuture<FetchReply> a = rabbitFetchAsync("c-a", host + "/cluster/a");
+                final CompletableFuture<FetchReply> b = rabbitFetchAsync("c-b", host + "/cluster/b");
+                final long deadline = System.nanoTime() + WAIT.toNanos();
+                while (site.getAllServeEvents().stream().noneMatch(e -> e.getRequest().getUrl().equals("/cluster/a"))
+                    || unacknowledged(CLUSTER_REQUESTS) > 0) {
+                    assertTrue(System.nanoTime() < deadline, "A not in work within " + WAIT);
+                    Thread.sleep(50);
+                }
+
+                node.close();
+                node = startUrlManager(CLUSTER_REQUESTS, "after-submit", cluster);
+
+                assertEquals("page a", a.get(WAIT.toSeconds(), TimeUnit.SECONDS).getPage().getBody().toStringUtf8());
+                assertEquals("page b", b.get(WAIT.toSeconds(), TimeUnit.SECONDS).getPage().getBody().toStringUtf8());
+                assertEquals(1, served("/cluster/a", "127.0.0.1").size(), "A is not fetched again");
+            } finally {
+                clusterSidecar.stop();
+                node.close();
+            }
+        }
+    }
+
+    /**
      * url-manager of this JVM on the shared site, storage and broker; nodePort and httpPort - any free ones.
      */
-    private static ConfigurableApplicationContext startUrlManager(String queue, String ack) {
-        return new SpringApplicationBuilder(UrlManagerApplication.class).run(
+    private static ConfigurableApplicationContext startUrlManager(
+        String queue,
+        String ack,
+        String... more
+    ) {
+        final List<String> args = new ArrayList<>(List.of(
             "--server.port=0",
             "--url-manager.grpc-port=0",
             "--url-manager.crawl-delay=" + CRAWL_DELAY.toMillis() + "ms",
@@ -323,7 +381,14 @@ class UrlManagerIT {
             "--url-manager.rabbit.queue=" + queue,
             "--url-manager.rabbit.ack=" + ack,
             "--spring.rabbitmq.host=" + rabbit.getHost(),
-            "--spring.rabbitmq.port=" + rabbit.getMappedPort(5672));
+            "--spring.rabbitmq.port=" + rabbit.getMappedPort(5672)));
+        for (String arg : more) {
+            // a repeated argument would be joined into a list: the later one replaces the default
+            final String name = arg.substring(0, arg.indexOf('=') + 1);
+            args.removeIf(defaultArg -> defaultArg.startsWith(name));
+            args.add(arg);
+        }
+        return new SpringApplicationBuilder(UrlManagerApplication.class).run(args.toArray(String[]::new));
     }
 
     /**
@@ -347,6 +412,38 @@ class UrlManagerIT {
             .waitingFor(Wait.forLogMessage(".*session open.*", 1).withStartupTimeout(WAIT));
         container.start();
         return container;
+    }
+
+    private static CompletableFuture<FetchReply> rabbitFetchAsync(String id, String url) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return rabbitFetch(CLUSTER_REQUESTS, id, url);
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        }, calls);
+    }
+
+    /**
+     * cql/schema.cql of url-manager, as the init container of the stand applies it; cqlsh waits for the node to serve.
+     */
+    private static void applySchema(GenericContainer<?> scylla) throws IOException, InterruptedException {
+        scylla.copyFileToContainer(MountableFile.forHostPath(Path.of("cql/schema.cql")), "/schema.cql");
+        final long deadline = System.nanoTime() + Duration.ofMinutes(2).toNanos();
+        while (true) {
+            final Container.ExecResult result = scylla.execInContainer("cqlsh", "-f", "/schema.cql");
+            if (result.getExitCode() == 0) {
+                return;
+            }
+            assertTrue(System.nanoTime() < deadline, "schema not applied: " + result.getStderr());
+            Thread.sleep(2_000);
+        }
+    }
+
+    private static int freePort() throws IOException {
+        try (ServerSocket socket = new ServerSocket(0)) {
+            return socket.getLocalPort();
+        }
     }
 
     private static FetchReply rabbitFetch(String id, String url) throws Exception {

@@ -90,7 +90,7 @@ public final class MemoryTaskQueue implements TaskQueue, AutoCloseable {
     }
 
     @Override
-    public void complete(AttemptResult result) {
+    public CompletionStage<Void> complete(AttemptResult result) {
         final Effects effects;
         synchronized (lock) {
             final String key = keyById.get(result.taskId());
@@ -99,11 +99,12 @@ public final class MemoryTaskQueue implements TaskQueue, AutoCloseable {
                 : partitions.get(key);
             if (entry == null) {
                 log.debug("Ignoring result of an unknown task: task={} attempt={}", result.taskId(), result.attempt());
-                return;
+                return CompletableFuture.completedFuture(null);
             }
             effects = run(entry, entry.partition.completed(result, now()));
         }
         effects.carryOut();
+        return CompletableFuture.completedFuture(null);
     }
 
     /**

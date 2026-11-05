@@ -35,13 +35,27 @@
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
+        <!-- cluster mode: persistent queue in a Pekko cluster, journal in ScyllaDB -->
+        <dependency>
+            <groupId>io.github.deripas</groupId>
+            <artifactId>task-grid-queue-pekko</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.pekko</groupId>
+            <artifactId>pekko-persistence-cassandra_${scala.binary.version}</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.pekko</groupId>
+            <artifactId>pekko-slf4j_${scala.binary.version}</artifactId>
+        </dependency>
         <dependency>
             <groupId>io.github.deripas</groupId>
             <artifactId>fetcher-api</artifactId>
         </dependency>
+        <!-- client protocol over RabbitMQ (src/main/proto): messages only -->
         <dependency>
-            <groupId>io.github.deripas</groupId>
-            <artifactId>url-manager-api</artifactId>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -115,7 +129,22 @@
     </dependencies>
 
     <build>
+        <!-- target/url-manager.jar: the image of the stand (Dockerfile) copies it -->
+        <finalName>url-manager</finalName>
+        <extensions>
+            <!-- os.detected.classifier: platform of the protoc binaries -->
+            <extension>
+                <groupId>kr.motd.maven</groupId>
+                <artifactId>os-maven-plugin</artifactId>
+                <version>${os-maven-plugin.version}</version>
+            </extension>
+        </extensions>
         <plugins>
+            <plugin>
+                <groupId>org.xolstice.maven.plugins</groupId>
+                <!-- messages only: the gRPC goal of the managed execution finds no service and generates nothing -->
+                <artifactId>protobuf-maven-plugin</artifactId>
+            </plugin>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
@@ -143,6 +172,31 @@
                             <classesDirectory>${project.build.outputDirectory}</classesDirectory>
                             <systemPropertyVariables>
                                 <handler-sidecar.dir>${project.basedir}/../../handler-sidecar</handler-sidecar.dir>
+                            </systemPropertyVariables>
+                            <!-- the whole stand, minutes per profile: make stand-it -->
+                            <excludes>
+                                <exclude>**/StandIT.java</exclude>
+                            </excludes>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <!-- StandIT: the docker-compose stand of ../stand, both profiles; images from the jars of this build -->
+        <profile>
+            <id>stand</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <configuration>
+                            <classesDirectory>${project.build.outputDirectory}</classesDirectory>
+                            <includes>
+                                <include>**/StandIT.java</include>
+                            </includes>
+                            <systemPropertyVariables>
+                                <stand.dir>${project.basedir}/../stand</stand.dir>
                             </systemPropertyVariables>
                         </configuration>
                     </plugin>

@@ -10,12 +10,23 @@ import (
 // ErrRejected - the node rejected the request itself: repeating it gives the same answer.
 var ErrRejected = errors.New("request rejected")
 
-// Node - port to the task-grid node. Implementation - internal/node.
+// Nodes - port to the task-grid nodes behind one address (a DNS name of all the nodes of a cluster).
+// Implementation - internal/node.
+type Nodes interface {
+	// Resolve - addresses (host:port) of the nodes now, each node once. An error - keep the known ones.
+	Resolve(ctx context.Context) ([]string, error)
+	// Dial - a client of the node at the address; the connection is established lazily.
+	Dial(address string) (Node, error)
+}
+
+// Node - port to one task-grid node.
 type Node interface {
 	// Open opens a session: attempts and demand from the node, credit to the node. Cancelling ctx breaks the session.
 	Open(ctx context.Context, h Hello) (Session, error)
 	// Complete sends the result of an attempt. ErrRejected - it will never be accepted.
 	Complete(ctx context.Context, workerID string, c domain.Completion) error
+	// Close closes the connection.
+	Close() error
 }
 
 // Session - an open session with the node. Recv runs in one goroutine, SendCredit and Drain in another.
@@ -24,6 +35,8 @@ type Session interface {
 	Recv() (Event, error)
 	// SendCredit - the node may send attempts with session numbers up to limit. Values are absolute.
 	SendCredit(limit, version int64) error
+	// SendShare - the share of the capacity the node counts in its load: capacity / number of sessions.
+	SendShare(capacity float64) error
 	// Drain - no more attempts wanted (half-close); the node closes the session after the results of the
 	// attempts in progress.
 	Drain() error
@@ -31,9 +44,10 @@ type Session interface {
 
 // Hello - who connects to the node.
 type Hello struct {
-	WorkerID string
-	Kind     string
-	Capacity int
+	WorkerID   string
+	InstanceID string // random, new on each start of the process: the node sees a restart that lost the attempts
+	Kind       string
+	Capacity   int
 }
 
 // Event - a message of the node: an attempt or demand; exactly one field is set.

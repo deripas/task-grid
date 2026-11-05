@@ -9,6 +9,7 @@ import io.github.deripas.taskgrid.worker.Worker;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Clock;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -59,13 +60,15 @@ public final class RemoteWorker implements Worker, Sidecars, AutoCloseable {
         }
         final CompletableFuture<Assignment> reply = new CompletableFuture<>();
         if (!post(() -> allocator(kind).assign(attempt, reply, now()))) {
-            reply.complete(new Assignment.Rejected("node stopping"));
+            // stopped: not a failure of the task - another node of a cluster runs it again
+            reply.complete(new Assignment.Accepted());
+            report(AttemptResult.retry(attempt, "node stopping"));
         }
         return reply;
     }
 
     /**
-     * Results are reported on the engine thread.
+     * Results are reported on the engine thread; after stop - on the thread of the call.
      */
     @Override
     public void onComplete(AttemptCallback callback) {
@@ -80,20 +83,21 @@ public final class RemoteWorker implements Worker, Sidecars, AutoCloseable {
     }
 
     @Override
-    public Session connect(
-        String workerId,
-        String kind,
-        int capacity,
-        SessionChannel channel
-    ) {
+    public Session connect(SidecarHello hello, SessionChannel channel) {
         final String sessionId = UUID.randomUUID().toString();
-        if (!post(() -> allocator(kind).join(sessionId, workerId, capacity, channel, now()))) {
+        final String kind = hello.kind();
+        if (!post(() -> allocator(kind).join(sessionId, hello, channel, now()))) {
             channel.close();
         }
         return new Session() {
             @Override
             public void credit(long limit, long version) {
                 post(() -> allocator(kind).credited(sessionId, limit, version, now()));
+            }
+
+            @Override
+            public void share(double capacity) {
+                post(() -> allocator(kind).shared(sessionId, capacity));
             }
 
             @Override
@@ -108,19 +112,31 @@ public final class RemoteWorker implements Worker, Sidecars, AutoCloseable {
         };
     }
 
+    /**
+     * Completes when every callback has taken the result; after stop - fails, the sidecar sends it to another node.
+     */
     @Override
-    public void complete(String workerId, AttemptResult result) {
+    public CompletionStage<Void> complete(String workerId, AttemptResult result) {
+        final CompletableFuture<Void> taken = new CompletableFuture<>();
         final boolean posted = post(() -> {
             allocators.values().forEach(a -> a.completed(workerId, result.taskId(), result.attempt()));
-            report(result);
+            report(result).whenComplete((ignored, error) -> {
+                if (error == null) {
+                    taken.complete(null);
+                } else {
+                    taken.completeExceptionally(error);
+                }
+            });
         });
         if (!posted) {
-            log.debug("Ignoring a result after stop: worker={} task={}", workerId, result.taskId());
+            log.debug("Result after stop, not taken: worker={} task={}", workerId, result.taskId());
+            taken.completeExceptionally(new IllegalStateException("node stopping"));
         }
+        return taken;
     }
 
     /**
-     * Closes the sessions, rejects waiting attempts and stops the engine thread.
+     * Closes the sessions, reports waiting attempts as RETRY and stops the engine thread.
      */
     @Override
     public void close() {
@@ -150,16 +166,19 @@ public final class RemoteWorker implements Worker, Sidecars, AutoCloseable {
     }
 
     /**
-     * Engine thread.
+     * Engine thread (after stop - any). Completes when all callbacks have taken the result.
      */
-    private void report(AttemptResult result) {
+    private CompletableFuture<Void> report(AttemptResult result) {
+        final List<CompletableFuture<Void>> stages = new ArrayList<>(callbacks.size());
         for (AttemptCallback callback : callbacks) {
             try {
-                callback.complete(result);
+                stages.add(callback.complete(result).toCompletableFuture());
             } catch (RuntimeException e) {
                 log.error("Attempt callback failed: task={} attempt={}", result.taskId(), result.attempt(), e);
+                stages.add(CompletableFuture.failedFuture(e));
             }
         }
+        return CompletableFuture.allOf(stages.toArray(CompletableFuture[]::new));
     }
 
     /**

@@ -3,10 +3,13 @@ package io.github.deripas.crawler.urlmanager.config;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
+import java.util.List;
 
 /**
  * Settings {@code url-manager.*}; defaults - {@code application.yaml}.
  *
+ * @param queue           where the tasks live: in this process, or in the cluster of url-managers
+ * @param cluster         the Pekko cluster and its journal, for {@code queue: cluster}
  * @param grpcPort        port of the node for sidecars; 0 - any free one
  * @param grpcKeepalive   HTTP/2 pings of the connections of sidecars
  * @param defaultTimeout  wait for a page when the client gives none
@@ -21,6 +24,8 @@ import java.time.Duration;
  */
 @ConfigurationProperties("url-manager")
 public record UrlManagerProperties(
+    QueueMode queue,
+    Cluster cluster,
     int grpcPort,
     GrpcKeepalive grpcKeepalive,
     Duration defaultTimeout,
@@ -33,6 +38,41 @@ public record UrlManagerProperties(
     Blob blob,
     Rabbit rabbit
 ) {
+    /**
+     * Where the tasks live.
+     */
+    public enum QueueMode {
+        /**
+         * In this process: lost on a stop; each instance has queues of its own.
+         */
+        MEMORY,
+
+        /**
+         * In the Pekko cluster of url-managers, persisted in ScyllaDB: a host is one partition in the whole cluster,
+         * tasks survive a stop. Requests over RabbitMQ with {@code ack: after-submit} only; {@code POST /fetch} is off
+         * until results can be awaited on any node.
+         */
+        CLUSTER
+    }
+
+    /**
+     * The Pekko cluster of url-managers and its journal.
+     *
+     * @param host              address other nodes reach this one at (container or pod name)
+     * @param port              of Pekko remoting
+     * @param seedNodes         {@code host:port} of the nodes to join through; empty - this node alone
+     * @param contactPoints     {@code host:port} of ScyllaDB / Cassandra
+     * @param datacenter        local datacenter of the driver; keyspaces and tables - {@code cql/schema.cql}
+     */
+    public record Cluster(
+        String host,
+        int port,
+        List<String> seedNodes,
+        List<String> contactPoints,
+        String datacenter
+    ) {
+    }
+
     /**
      * HTTP/2 pings of the connections of sidecars: a hung connection (open, nothing passes) is closed.
      *
@@ -97,6 +137,10 @@ public record UrlManagerProperties(
     }
 
     public UrlManagerProperties {
+        if (queue == QueueMode.CLUSTER && rabbit.enabled() && rabbit.ack() == Ack.AFTER_REPLY) {
+            throw new IllegalArgumentException("queue: cluster needs rabbit.ack: after-submit - a result may finish on another "
+                + "node than the one waiting for it");
+        }
         if (defaultTimeout.compareTo(maxTimeout) > 0) {
             throw new IllegalArgumentException("default-timeout " + defaultTimeout + " above max-timeout " + maxTimeout);
         }

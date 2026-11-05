@@ -32,9 +32,10 @@ public interface TaskQueue {
     CompletionStage<Void> submit(Task task);
 
     /**
-     * Result of an attempt the queue handed out. A result of an attempt not in progress (late, duplicate) is ignored.
+     * Result of an attempt the queue handed out. Completes when the queue has taken it (a persistent queue - when it is
+     * in the journal); a result of an attempt not in progress (late, duplicate) is ignored and completes too.
      */
-    void complete(AttemptResult result);
+    CompletionStage<Void> complete(AttemptResult result);
 
     /**
      * Registers a receiver of the attempts ready to run. Register before submitting tasks: an attempt handed out while

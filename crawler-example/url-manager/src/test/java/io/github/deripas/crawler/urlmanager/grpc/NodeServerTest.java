@@ -88,11 +88,11 @@ class NodeServerTest {
             }
         });
         session.onNext(SidecarMessage.newBuilder()
-            .setHello(Hello.newBuilder().setWorkerId("worker-" + kind).setKind(kind).setCapacity(1))
+            .setHello(Hello.newBuilder().setWorkerId("worker-" + kind).setInstanceId("i").setKind(kind).setCapacity(1))
             .build());
     }
 
-    private int capacity(String kind) {
+    private double capacity(String kind) {
         return worker.load().getOrDefault(kind, Load.EMPTY).capacity();
     }
 

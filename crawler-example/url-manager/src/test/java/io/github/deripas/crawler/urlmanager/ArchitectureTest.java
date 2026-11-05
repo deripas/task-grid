@@ -13,7 +13,8 @@ import static com.tngtech.archunit.library.dependencies.SlicesRuleDefinition.sli
 /**
  * Architecture rules of url-manager, checked by the regular build ({@code make verify}).
  * <pre>
- *   app      UrlManagerApplication, UrlManagerConfiguration - assembly: Spring, task-grid node, adapters; nobody sees it
+ *   app      UrlManagerApplication, UrlManagerConfiguration - assembly: Spring, task-grid node (in memory or in the Pekko
+ *            cluster: PekkoCluster), adapters; nobody sees it
  *     ↓
  *   api      FetchController - inbound adapter: HTTP (Spring MVC) &lt;-&gt; fetch
  *   amqp     FetchMessages, RabbitFetchListener - inbound adapter: RabbitMQ (Spring AMQP), url_manager.proto (v1,
@@ -79,7 +80,15 @@ class ArchitectureTest {
         .that().resideOutsideOfPackages(BASE + ".app..", BASE + ".grpc..", BASE + ".metrics..")
         .should().dependOnClassesThat().resideInAnyPackage(
             TASK_GRID + ".queue.memory..", TASK_GRID + ".result.memory..", TASK_GRID + ".worker.remote..", TASK_GRID + ".worker.local..",
-            TASK_GRID + ".dispatch..");
+            TASK_GRID + ".dispatch..", TASK_GRID + ".queue.pekko..");
+
+    /**
+     * The cluster is a matter of the assembly: the use case and the adapters see only the TaskQueue port.
+     */
+    @ArchTest
+    static final ArchRule PEKKO_ONLY_IN_APP = noClasses()
+        .that().resideOutsideOfPackage(BASE + ".app..")
+        .should().dependOnClassesThat().resideInAnyPackage("org.apache.pekko..", "com.typesafe.config..");
 
     @ArchTest
     static final ArchRule NO_SPRING_IN_DOMAIN_AND_OUTBOUND_ADAPTERS = noClasses()

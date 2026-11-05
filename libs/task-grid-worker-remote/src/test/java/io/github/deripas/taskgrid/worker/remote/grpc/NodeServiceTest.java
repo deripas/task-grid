@@ -6,6 +6,7 @@ import io.github.deripas.taskgrid.task.AttemptStatus;
 import io.github.deripas.taskgrid.task.Blob;
 import io.github.deripas.taskgrid.worker.remote.Session;
 import io.github.deripas.taskgrid.worker.remote.SessionChannel;
+import io.github.deripas.taskgrid.worker.remote.SidecarHello;
 import io.github.deripas.taskgrid.worker.remote.Sidecars;
 import io.github.deripas.taskgrid.worker.remote.v1.BlobRef;
 import io.github.deripas.taskgrid.worker.remote.v1.CompleteRequest;
@@ -19,29 +20,29 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
- * Translation of {@code Complete} to the domain: inline body, reference to blob storage, rejected requests.
+ * Translation of {@code Complete} to the domain: inline body, reference to blob storage, rejected requests; OK only once
+ * the result is taken.
  */
 class NodeServiceTest {
     private final List<AttemptResult> completed = new ArrayList<>();
+    private CompletableFuture<Void> taken = CompletableFuture.completedFuture(null);
     private final NodeService service = new NodeService(new Sidecars() {
         @Override
-        public Session connect(
-            String workerId,
-            String kind,
-            int capacity,
-            SessionChannel channel
-        ) {
+        public Session connect(SidecarHello hello, SessionChannel channel) {
             throw new UnsupportedOperationException();
         }
 
         @Override
-        public void complete(String workerId, AttemptResult result) {
+        public CompletionStage<Void> complete(String workerId, AttemptResult result) {
             completed.add(result);
+            return taken;
         }
     });
 
@@ -50,6 +51,16 @@ class NodeServiceTest {
         assertEquals(Code.OK, complete(done().setBody(ByteString.copyFromUtf8("answer")).build()));
 
         assertEquals(Blob.of("answer".getBytes(StandardCharsets.UTF_8)), completed.getFirst().body());
+    }
+
+    /**
+     * The queue did not take the result (its journal is down): not OK, so the sidecar sends it again.
+     */
+    @Test
+    void resultNotTakenIsUnavailable() {
+        taken = CompletableFuture.failedFuture(new IllegalStateException("journal down"));
+
+        assertEquals(Code.UNAVAILABLE, complete(done().setBody(ByteString.EMPTY).build()));
     }
 
     @Test

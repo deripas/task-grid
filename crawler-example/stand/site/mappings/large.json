@@ -1,0 +1,15 @@
+{
+  "priority": 1,
+  "request": {
+    "method": "GET",
+    "urlPath": "/large"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/xml"
+    },
+    "body": "{{randomValue length=600000 type='ALPHANUMERIC'}}",
+    "transformers": ["response-template"]
+  }
+}

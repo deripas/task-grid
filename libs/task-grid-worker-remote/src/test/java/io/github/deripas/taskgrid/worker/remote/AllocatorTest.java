@@ -22,15 +22,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Distribution of attempts of one kind: demand, credit, return of surplus credit, HRW affinity and its widening,
- * attempts of closed sessions, failed writes, node stop. The state machine without an engine: time is a parameter.
+ * attempts of lost, superseded and restarted sidecars, failed writes, node stop. The state machine without an engine:
+ * time is a parameter.
  */
 class AllocatorTest {
     private static final long T0 = 1_000_000;
     private static final RemoteSettings SETTINGS = new RemoteSettings(
-        Duration.ofMillis(10), Duration.ofMillis(150), Duration.ofMillis(20), Duration.ofSeconds(2));
+        Duration.ofMillis(10), Duration.ofMillis(150), Duration.ofMillis(20), Duration.ofSeconds(2), Duration.ofSeconds(1));
+    private static final long REJOIN = SETTINGS.rejoinTimeout().toMillis();
 
     private final List<AttemptResult> retried = new ArrayList<>();
-    private final Allocator allocator = new Allocator("k", SETTINGS, retried::add);
+    private final Allocator allocator = new Allocator("k", SETTINGS, result -> {
+        retried.add(result);
+        return CompletableFuture.completedFuture(null);
+    });
     private int sessions;
     private int tasks;
 
@@ -148,20 +153,73 @@ class AllocatorTest {
         assertEquals(0, allocator.sessions());
     }
 
+    /**
+     * The session broke and the sidecar did not come back: its attempt goes to another sidecar with the same number,
+     * the queue does not see it.
+     */
     @Test
-    void attemptsInProgressAreRetriedWhenSessionCloses() {
+    void attemptsOfALostSidecarGoToAnotherAfterRejoinTimeout() {
         final Sidecar s = join("w1", 2);
         assign(null);
         assign(null);
         s.credit(2, 1);
         allocator.completed("w1", "t1", 1);
 
-        allocator.leave(s.channel.sessionId, "closed by sidecar", T0);
-        assertEquals(1, retried.size());
-        final AttemptResult r = retried.getFirst();
-        assertEquals("t2", r.taskId());
-        assertEquals(AttemptStatus.RETRY, r.status());
-        assertEquals("session of w1 closed: closed by sidecar", r.error());
+        allocator.leave(s.channel.sessionId, "broken", T0);
+        allocator.tick(T0 + REJOIN);
+        assertEquals(new Load(0, 1, 0), allocator.load(), "waits for the sidecar to reconnect");
+
+        allocator.tick(T0 + REJOIN + 1);
+        assertEquals(new Load(1, 0, 0), allocator.load());
+        final Sidecar other = join("w2", 1);
+        other.credit(1, 1);
+        assertEquals(List.of("t2"), other.taskIds());
+        assertEquals(1, other.channel.attempts.getFirst().number());
+        assertTrue(retried.isEmpty(), "nothing goes to the queue: " + retried);
+    }
+
+    @Test
+    void sidecarThatReconnectsKeepsItsAttempts() {
+        final Sidecar s = join("w1", 1);
+        assign(null);
+        s.credit(1, 1);
+        allocator.leave(s.channel.sessionId, "broken", T0);
+
+        join("w1", 1);
+        allocator.tick(T0 + REJOIN + 1);
+        assertEquals(new Load(0, 1, 1), allocator.load());
+        allocator.completed("w1", "t1", 1);
+        assertEquals(new Load(0, 0, 1), allocator.load());
+    }
+
+    /**
+     * The same worker id with another instance id: the process was restarted and lost its attempts.
+     */
+    @Test
+    void restartedSidecarLosesItsAttemptsAtOnce() {
+        final Sidecar old = join("w1", "i1", 1);
+        assign(null);
+        old.credit(1, 1);
+
+        final Sidecar fresh = join("w1", "i2", 1);
+        assertTrue(old.channel.closed);
+        fresh.credit(1, 1);
+        assertEquals(List.of("t1"), fresh.taskIds());
+        assertTrue(retried.isEmpty(), "nothing goes to the queue: " + retried);
+    }
+
+    /**
+     * A draining sidecar that breaks the session has abandoned its attempts: they are not waited for.
+     */
+    @Test
+    void sidecarLostWhileDrainingIsNotWaitedFor() {
+        final Sidecar s = join("w1", 1);
+        assign(null);
+        s.credit(1, 1);
+        allocator.drain(s.channel.sessionId, T0);
+
+        allocator.leave(s.channel.sessionId, "drain timeout", T0);
+        assertEquals(new Load(1, 0, 0), allocator.load());
     }
 
     @Test
@@ -201,7 +259,10 @@ class AllocatorTest {
         assertTrue(old.channel.closed, "superseded");
         assertFalse(fresh.channel.closed);
         assertEquals(1, allocator.sessions());
-        assertEquals(List.of("t1"), retried.stream().map(AttemptResult::taskId).toList());
+        assertTrue(retried.isEmpty(), "the attempt stays in progress: " + retried);
+
+        allocator.completed("w1", "t1", 1); // received in the old session, completed in the new one
+        assertEquals(new Load(0, 0, 1), allocator.load());
     }
 
     @Test
@@ -211,18 +272,23 @@ class AllocatorTest {
         s.credit(1, 1);
         allocator.completed("w1", "t1", 2);
 
-        allocator.leave(s.channel.sessionId, "gone", T0);
-        assertEquals(1, retried.size());
+        assertEquals(new Load(0, 1, 1), allocator.load());
     }
 
+    /**
+     * Attempts in progress are left to their sidecars (the results go to another node); waiting ones are retried.
+     */
     @Test
-    void stopClosesSessionsAndRejectsWaiting() {
+    void stopClosesSessionsAndRetriesWaiting() {
         final Sidecar s = join("w1", 1);
         final CompletableFuture<Assignment> reply = assign(null);
         allocator.stop();
-        assertEquals(new Assignment.Rejected("node stopping"), reply.join());
+        assertEquals(new Assignment.Accepted(), reply.join());
         assertTrue(s.channel.closed);
-        assertInstanceOf(Assignment.Rejected.class, assign(null).join());
+        assertEquals(List.of("node stopping"), retried.stream().map(AttemptResult::error).toList());
+
+        assertInstanceOf(Assignment.Accepted.class, assign(null).join());
+        assertEquals(2, retried.size());
     }
 
     /**
@@ -255,9 +321,28 @@ class AllocatorTest {
         assertEquals(new Load(1, 1, 5), allocator.load());
     }
 
+    /**
+     * A sidecar connected to several nodes tells each its share of the capacity.
+     */
+    @Test
+    void capacityIsTheShareOfTheSidecar() {
+        final Sidecar a = join("w1", 4);
+        join("w2", 3);
+        allocator.shared(a.channel.sessionId, 4 / 3.0);
+        assertEquals(4 / 3.0 + 3, allocator.load().capacity(), 1e-9);
+    }
+
     private Sidecar join(String workerId, int capacity) {
+        return join(workerId, "i-" + workerId, capacity);
+    }
+
+    private Sidecar join(
+        String workerId,
+        String instanceId,
+        int capacity
+    ) {
         final Channel channel = new Channel("s" + (++sessions));
-        allocator.join(channel.sessionId, workerId, capacity, channel, T0);
+        allocator.join(channel.sessionId, new SidecarHello(workerId, instanceId, "k", capacity), channel, T0);
         return new Sidecar(workerId, channel);
     }
 

@@ -1,0 +1,86 @@
+{
+  "users": [
+    {
+      "name": "stand",
+      "password_hash": "HjgYtiQODQqPaR5+kK5kpTNCpPi0qQuT05PAiSQmsWd5NPrj",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": [
+        "administrator"
+      ]
+    }
+  ],
+  "vhosts": [
+    {
+      "name": "/"
+    }
+  ],
+  "permissions": [
+    {
+      "user": "stand",
+      "vhost": "/",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ],
+  "exchanges": [
+    {
+      "name": "url-manager.fetch",
+      "vhost": "/",
+      "type": "x-consistent-hash",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+  "queues": [
+    {
+      "name": "url-manager.fetch.1",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "url-manager.fetch.2",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "url-manager.fetch.3",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    }
+  ],
+  "bindings": [
+    {
+      "source": "url-manager.fetch",
+      "vhost": "/",
+      "destination": "url-manager.fetch.1",
+      "destination_type": "queue",
+      "routing_key": "1",
+      "arguments": {}
+    },
+    {
+      "source": "url-manager.fetch",
+      "vhost": "/",
+      "destination": "url-manager.fetch.2",
+      "destination_type": "queue",
+      "routing_key": "1",
+      "arguments": {}
+    },
+    {
+      "source": "url-manager.fetch",
+      "vhost": "/",
+      "destination": "url-manager.fetch.3",
+      "destination_type": "queue",
+      "routing_key": "1",
+      "arguments": {}
+    }
+  ]
+}

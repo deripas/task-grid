@@ -20,7 +20,8 @@ import java.util.concurrent.TimeUnit;
  * reconnect to the next node.
  * <p>
  * Keepalive: sessions live long and may be quiet. The server pings each connection and closes one that does not
- * answer, so a hung sidecar (the connection is there, nothing passes) loses its session and its attempts are retried;
+ * answer, so a hung sidecar (the connection is there, nothing passes) loses its session and its attempts go to other
+ * sidecars after the rejoin timeout;
  * it accepts the pings of sidecars, which detect a hung node the same way.
  */
 @Slf4j
@@ -43,7 +44,7 @@ public final class NodeServer implements SmartLifecycle {
     /**
      * Below the phases of the web server (graceful shutdown, start / stop).
      */
-    static final int PHASE = SmartLifecycle.DEFAULT_PHASE - 4096;
+    public static final int PHASE = SmartLifecycle.DEFAULT_PHASE - 4096;
 
     private final int port;
     private final NodeService service;

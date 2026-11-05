@@ -12,15 +12,15 @@ libs/                      reusable task-grid libraries, no Spring
   task-grid-core/          domain: types, contracts (ports), in-memory implementations; JDK only
   task-grid-worker-remote/ Worker for handlers behind handler-sidecar: remote.proto (shared with Go), credits, gRPC
   task-grid-queue-pekko/   persistent queue of a Pekko cluster: a partition is a sharded event-sourced entity
-handler-sidecar/           Go process next to a remote handler: session with the node, credit, results (large ones to S3), drain
+handler-sidecar/           Go process next to a remote handler: sessions with every node, credit, results (large ones to S3), drain
 starters/                  Spring Boot starters over libs/ (not necessarily one per library)
 crawler-example/           crawler built on task-grid; imports the Spring Boot BOM
   fetcher-api/             fetcher.proto - handler protocol shared by fetcher and url-manager
   fetcher/                 handler: plain Java gRPC server over Apache HttpClient, runs behind handler-sidecar
-  url-manager-api/         url_manager.proto - client protocol of url-manager over RabbitMQ (messages only)
-  url-manager/             Spring Boot application: POST /fetch and a RabbitMQ queue with reply_to on an in-memory
-                           task-grid node, crawl-delay, remote worker of the fetch kind, large pages read from S3,
-                           pool metrics on /actuator/prometheus
+  url-manager/             Spring Boot application: RabbitMQ with reply_to (url_manager.proto) and POST /fetch on a
+                           task-grid node - in memory, or in a Pekko cluster with the journal in ScyllaDB -, crawl-delay,
+                           remote worker of the fetch kind, large pages read from S3, pool metrics on /actuator/prometheus
+  stand/                   docker-compose stand: profiles memory and cluster, RabbitMQ, SeaweedFS, ScyllaDB, a fake site
 docs/                      project documents
 .local/                    working notes and scratch files, not in git
 ```
@@ -57,4 +57,5 @@ Until there are starters, `url-manager` wires the libraries itself (its `UrlMana
   `handler-sidecar` - `arch-go.yml`, run by `make verify` as well.
 - Go module path - `github.com/deripas/task-grid/<dir>`; generated code from shared proto files is committed.
 - Integration tests are `*IT` classes run by failsafe in the Maven profile `it` (`make it`, needs Docker);
-  `make verify` runs only unit tests and architecture rules.
+  `make verify` runs only unit tests and architecture rules. `StandIT` (the docker-compose stand) - only in the profile
+  `stand` (`make stand-it`): minutes per profile.

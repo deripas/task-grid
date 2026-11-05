@@ -35,12 +35,11 @@ func Run() int {
 		return 1
 	}
 	defer h.Close()
-	n, err := node.New(cfg.Node)
+	nodes, err := node.NewPool(cfg.Node)
 	if err != nil {
-		log.Error("node client", "err", err)
-		return 1
+		log.Error("nodes", "err", err)
+		return 2
 	}
-	defer n.Close()
 
 	// a nil *blob.Store in the interface would not be nil: the port stays unset without storage
 	var blobs sidecar.Blobs
@@ -51,7 +50,7 @@ func Run() int {
 		}
 	}
 
-	s := sidecar.New(cfg.Sidecar, n, h, blobs, log)
+	s := sidecar.New(cfg.Sidecar, nodes, h, blobs, log)
 	defer s.Close()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)

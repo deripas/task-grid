@@ -13,6 +13,7 @@ import io.grpc.Channel;
 import io.grpc.stub.StreamObserver;
 
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
@@ -60,7 +61,11 @@ final class TestSidecar implements AutoCloseable {
         this.results = NodeGrpc.newBlockingStub(channel);
         this.requests = NodeGrpc.newStub(channel).connect(new Responses());
         send(SidecarMessage.newBuilder()
-            .setHello(Hello.newBuilder().setWorkerId(workerId).setKind(kind).setCapacity(capacity))
+            .setHello(Hello.newBuilder()
+                .setWorkerId(workerId)
+                .setInstanceId(UUID.randomUUID().toString())
+                .setKind(kind)
+                .setCapacity(capacity))
             .build());
     }
 

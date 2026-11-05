@@ -1,10 +1,13 @@
-// Package node - adapter to the task-grid node: protocol taskgrid.worker.remote.v1 (internal/gen) <-> domain,
-// gRPC codes -> errors of the port sidecar.Node.
+// Package node - adapter to the task-grid nodes: addresses of the nodes from DNS, protocol taskgrid.worker.remote.v1
+// (internal/gen) <-> domain, gRPC codes -> errors of the port sidecar.Node.
 package node
 
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/netip"
+	"slices"
 	"sync"
 	"time"
 
@@ -19,14 +22,59 @@ import (
 	"github.com/deripas/task-grid/handler-sidecar/internal/sidecar"
 )
 
-// Config - the node and the check of the connection to it.
+// Config - the nodes and the check of the connections to them.
 type Config struct {
-	Address string // host:port of the task-grid node
+	// host:port of the task-grid nodes: a DNS name resolved to every node (k8s headless service, network alias),
+	// or the address of one node
+	Address string
 	// HTTP/2 pings, also without calls: a connection without an answer to a ping within KeepaliveTimeout is closed,
 	// the session breaks and the sidecar reconnects. gRPC raises KeepaliveTime below 10s to 10s; the node must
 	// permit pings that often.
 	KeepaliveTime    time.Duration
 	KeepaliveTimeout time.Duration
+}
+
+// Pool - the nodes behind Config.Address: implements the port sidecar.Nodes.
+type Pool struct {
+	cfg  Config
+	host string
+	port string
+}
+
+// NewPool checks the address; nothing is resolved yet.
+func NewPool(cfg Config) (*Pool, error) {
+	host, port, err := net.SplitHostPort(cfg.Address)
+	if err != nil {
+		return nil, fmt.Errorf("node address %q: %w", cfg.Address, err)
+	}
+	return &Pool{cfg: cfg, host: host, port: port}, nil
+}
+
+// Resolve - the addresses of the nodes, sorted. IPv4 ones if there are any, otherwise IPv6: a dual-stack name lists
+// each node twice, and two sessions of one sidecar with one node would supersede each other.
+func (p *Pool) Resolve(ctx context.Context) ([]string, error) {
+	if _, err := netip.ParseAddr(p.host); err == nil {
+		return []string{p.cfg.Address}, nil
+	}
+	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", p.host)
+	if err != nil || len(ips) == 0 {
+		if ips, err = net.DefaultResolver.LookupNetIP(ctx, "ip6", p.host); err != nil {
+			return nil, err
+		}
+	}
+	addrs := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		addrs = append(addrs, net.JoinHostPort(ip.Unmap().String(), p.port))
+	}
+	slices.Sort(addrs)
+	return slices.Compact(addrs), nil
+}
+
+// Dial - a client of the node at the address, with the keepalive of the pool.
+func (p *Pool) Dial(address string) (sidecar.Node, error) {
+	cfg := p.cfg
+	cfg.Address = address
+	return New(cfg)
 }
 
 // Client - connection to one node.
@@ -35,7 +83,7 @@ type Client struct {
 	stub remotev1.NodeClient
 }
 
-// New creates a client of the node; the connection is established lazily.
+// New creates a client of the node at cfg.Address; the connection is established lazily.
 func New(cfg Config) (*Client, error) {
 	conn, err := grpc.NewClient(cfg.Address,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -61,9 +109,10 @@ func (c *Client) Open(ctx context.Context, h sidecar.Hello) (sidecar.Session, er
 		return nil, err
 	}
 	hello := &remotev1.SidecarMessage{Msg: &remotev1.SidecarMessage_Hello{Hello: &remotev1.Hello{
-		WorkerId: h.WorkerID,
-		Kind:     h.Kind,
-		Capacity: int32(h.Capacity),
+		WorkerId:   h.WorkerID,
+		InstanceId: h.InstanceID,
+		Kind:       h.Kind,
+		Capacity:   int32(h.Capacity),
 	}}}
 	if err := stream.Send(hello); err != nil {
 		return nil, err
@@ -134,6 +183,14 @@ func (s *session) SendCredit(limit, version int64) error {
 	return s.stream.Send(&remotev1.SidecarMessage{Msg: &remotev1.SidecarMessage_Credit{Credit: &remotev1.Credit{
 		Limit:   limit,
 		Version: version,
+	}}})
+}
+
+func (s *session) SendShare(capacity float64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stream.Send(&remotev1.SidecarMessage{Msg: &remotev1.SidecarMessage_Share{Share: &remotev1.Share{
+		Capacity: capacity,
 	}}})
 }
 

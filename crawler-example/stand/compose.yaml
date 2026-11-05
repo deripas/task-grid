@@ -1,0 +1,218 @@
+# Stand of the crawler: url-managers, fetchers behind handler-sidecars, RabbitMQ, SeaweedFS and a fake site.
+# Profiles (one at a time): memory - three url-managers with queues of their own behind a consistent-hash exchange
+# (ack after-reply); cluster - three url-managers in a Pekko cluster, journal in ScyllaDB, one queue (after-submit).
+# Run: make stand PROFILE=memory|cluster (builds the jars first); details - README.md.
+name: task-grid-stand
+
+x-url-manager: &url-manager
+  build: ../url-manager
+  image: task-grid/url-manager:stand
+  stop_grace_period: 40s
+
+x-url-manager-env: &url-manager-env
+  JAVA_TOOL_OPTIONS: -Xmx384m
+  SPRING_RABBITMQ_HOST: rabbitmq
+  SPRING_RABBITMQ_USERNAME: stand
+  SPRING_RABBITMQ_PASSWORD: stand
+  URL_MANAGER_RABBIT_ENABLED: "true"
+  BLOB_S3_ENDPOINT: http://seaweedfs:8333
+  BLOB_S3_ACCESS_KEY: any
+  BLOB_S3_SECRET_KEY: any
+
+# memory: the queue of instance N is url-manager.fetch.N
+x-url-manager-memory: &url-manager-memory
+  <<: *url-manager
+  profiles: [memory]
+  depends_on:
+    rabbitmq-memory:
+      condition: service_healthy
+
+# cluster: every node is a seed node; the first one listed starts the cluster
+x-url-manager-cluster-env: &url-manager-cluster-env
+  <<: *url-manager-env
+  URL_MANAGER_QUEUE: cluster
+  URL_MANAGER_RABBIT_QUEUE: url-manager.fetch
+  URL_MANAGER_RABBIT_ACK: after-submit
+  PEKKO_SEED_NODES: url-manager-cluster-1:25520,url-manager-cluster-2:25520,url-manager-cluster-3:25520
+  SCYLLA_CONTACT_POINTS: scylla:9042
+
+x-url-manager-cluster: &url-manager-cluster
+  <<: *url-manager
+  profiles: [cluster]
+  depends_on:
+    rabbitmq-cluster:
+      condition: service_healthy
+    scylla-init:
+      condition: service_completed_successfully
+
+x-rabbitmq: &rabbitmq
+  image: rabbitmq:4.3-alpine
+  ports:
+    - "5672:5672"
+    - "15672:15672" # management UI, stand / stand
+  healthcheck:
+    test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+    interval: 5s
+    timeout: 10s
+    retries: 30
+  networks:
+    default:
+      aliases: [rabbitmq]
+
+x-fetcher: &fetcher
+  build: ../fetcher
+  image: task-grid/fetcher:stand
+  environment:
+    JAVA_TOOL_OPTIONS: -Xmx256m
+
+# a pod: the sidecar shares the network of its fetcher and calls it on localhost; it connects to every url-manager
+# behind the alias url-manager
+x-sidecar: &sidecar
+  build: ../../handler-sidecar
+  image: task-grid/handler-sidecar:stand
+  depends_on:
+    seaweedfs-init:
+      condition: service_completed_successfully
+
+x-sidecar-env: &sidecar-env
+  NODE_ADDRESS: url-manager:9090
+  HANDLER_TARGET: localhost:50051
+  HANDLER_METHOD: /crawler.fetcher.v1.Fetcher/Fetch
+  KIND: fetch
+  CAPACITY: "4"
+  BLOB_S3_ENDPOINT: seaweedfs:8333
+  BLOB_PREFIX: stand/
+
+services:
+  url-manager-memory-1:
+    <<: *url-manager-memory
+    environment:
+      <<: *url-manager-env
+      URL_MANAGER_RABBIT_QUEUE: url-manager.fetch.1
+    ports: ["8081:8080"]
+    networks:
+      default:
+        aliases: [url-manager]
+  url-manager-memory-2:
+    <<: *url-manager-memory
+    environment:
+      <<: *url-manager-env
+      URL_MANAGER_RABBIT_QUEUE: url-manager.fetch.2
+    ports: ["8082:8080"]
+    networks:
+      default:
+        aliases: [url-manager]
+  url-manager-memory-3:
+    <<: *url-manager-memory
+    environment:
+      <<: *url-manager-env
+      URL_MANAGER_RABBIT_QUEUE: url-manager.fetch.3
+    ports: ["8083:8080"]
+    networks:
+      default:
+        aliases: [url-manager]
+
+  url-manager-cluster-1:
+    <<: *url-manager-cluster
+    environment:
+      <<: *url-manager-cluster-env
+      PEKKO_HOST: url-manager-cluster-1
+    ports: ["8081:8080"]
+    networks:
+      default:
+        aliases: [url-manager]
+  url-manager-cluster-2:
+    <<: *url-manager-cluster
+    environment:
+      <<: *url-manager-cluster-env
+      PEKKO_HOST: url-manager-cluster-2
+    ports: ["8082:8080"]
+    networks:
+      default:
+        aliases: [url-manager]
+  url-manager-cluster-3:
+    <<: *url-manager-cluster
+    environment:
+      <<: *url-manager-cluster-env
+      PEKKO_HOST: url-manager-cluster-3
+    ports: ["8083:8080"]
+    networks:
+      default:
+        aliases: [url-manager]
+
+  rabbitmq-memory:
+    <<: *rabbitmq
+    profiles: [memory]
+    volumes:
+      - ./rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/20-stand.conf:ro
+      - ./rabbitmq/memory/definitions.json:/etc/rabbitmq/definitions.json:ro
+  rabbitmq-cluster:
+    <<: *rabbitmq
+    profiles: [cluster]
+    volumes:
+      - ./rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/20-stand.conf:ro
+      - ./rabbitmq/cluster/definitions.json:/etc/rabbitmq/definitions.json:ro
+
+  scylla:
+    image: scylladb/scylla:2026.3
+    profiles: [cluster]
+    command: --smp 1 --memory 512M --overprovisioned 1 --developer-mode 1
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'select now() from system.local'"]
+      interval: 5s
+      timeout: 10s
+      retries: 60
+      start_period: 20s
+  # keyspaces and tables of the journal (autocreate of the plugin races with the first recoveries)
+  scylla-init:
+    image: scylladb/scylla:2026.3
+    profiles: [cluster]
+    entrypoint: ["cqlsh", "scylla", "-f", "/schema.cql"]
+    volumes:
+      - ../url-manager/cql/schema.cql:/schema.cql:ro
+    depends_on:
+      scylla:
+        condition: service_healthy
+
+  fetcher-1:
+    <<: *fetcher
+  fetcher-2:
+    <<: *fetcher
+  sidecar-1:
+    <<: *sidecar
+    network_mode: service:fetcher-1
+    environment:
+      <<: *sidecar-env
+      WORKER_ID: fetcher-1
+  sidecar-2:
+    <<: *sidecar
+    network_mode: service:fetcher-2
+    environment:
+      <<: *sidecar-env
+      WORKER_ID: fetcher-2
+
+  # large pages of the sidecars, read back by url-manager
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.48
+    command: server -s3 -dir=/data -master.volumeSizeLimitMB=64 -volume.max=0
+  seaweedfs-init:
+    image: curlimages/curl:8.11.1
+    entrypoint: ["/bin/sh", "-c"]
+    # the bucket, then a probe write: the port is open before the S3 gateway and the volumes are ready
+    command:
+      - >-
+        until curl -s -o /dev/null -X PUT http://seaweedfs:8333/results
+        && curl -sf -o /dev/null -X PUT --data probe http://seaweedfs:8333/results/probe; do sleep 1; done
+    depends_on: [seaweedfs]
+
+  # the sites to crawl: any path of site-a ... site-e is a small page after 100 ms, /large - 600 KB (to blob storage)
+  site:
+    image: wiremock/wiremock:3.13.2
+    ports: ["8090:8080"] # admin API: /__admin/requests - the journal (Host, time) shows the crawl-delay
+    volumes:
+      - ./site:/home/wiremock:ro
+    networks:
+      default:
+        aliases: [site-a, site-b, site-c, site-d, site-e]

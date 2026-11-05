@@ -11,7 +11,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 
 import java.util.List;
 import java.util.Set;
-import java.util.function.ToIntFunction;
+import java.util.function.ToDoubleFunction;
 
 /**
  * Load of the worker pools by kind, the signals for autoscaling the pools (KEDA):
@@ -42,7 +42,7 @@ public final class PoolMetrics implements MeterBinder {
             .description("Attempts in progress in the handlers")
             .register(registry);
         capacity = MultiGauge.builder("task.grid.worker.capacity")
-            .description("Slots of the connected handlers")
+            .description("Slots of the connected handlers: the share of this node")
             .register(registry);
         kinds = Set.of();
         refresh();
@@ -63,10 +63,10 @@ public final class PoolMetrics implements MeterBinder {
         register(capacity, Load::capacity);
     }
 
-    private void register(MultiGauge gauge, ToIntFunction<Load> value) {
+    private void register(MultiGauge gauge, ToDoubleFunction<Load> value) {
         final List<MultiGauge.Row<?>> rows = kinds.stream()
             .<MultiGauge.Row<?>>map(kind -> MultiGauge.Row.of(Tags.of(KIND, kind), worker,
-                w -> value.applyAsInt(w.load().getOrDefault(kind, Load.EMPTY))))
+                w -> value.applyAsDouble(w.load().getOrDefault(kind, Load.EMPTY))))
             .toList();
         gauge.register(rows, true);
     }

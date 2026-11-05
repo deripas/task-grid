@@ -65,7 +65,8 @@ class RemoteNodeTest {
 
     @Test
     void tasksOfAKeyRunOnTheirPreferredSidecar() throws IOException {
-        start(new RemoteSettings(Duration.ofMillis(10), Duration.ofSeconds(10), Duration.ofMillis(20), Duration.ofSeconds(30)));
+        start(new RemoteSettings(
+            Duration.ofMillis(10), Duration.ofSeconds(10), Duration.ofMillis(20), Duration.ofSeconds(30), Duration.ofSeconds(15)));
         final TestSidecar a = sidecar("worker-a", 4, attempt -> attempt.getPayload().toByteArray());
         final TestSidecar b = sidecar("worker-b", 4, attempt -> attempt.getPayload().toByteArray());
 
@@ -92,9 +93,13 @@ class RemoteNodeTest {
         assertTrue(!a.received().isEmpty() && !b.received().isEmpty(), "keys are spread over both sidecars");
     }
 
+    /**
+     * The crashed sidecar does not come back within rejoin-timeout: its attempt goes to another sidecar, not counted.
+     */
     @Test
-    void attemptOfACrashedSidecarIsRetriedOnAnother() throws IOException, InterruptedException {
-        start(RemoteSettings.DEFAULTS);
+    void attemptOfACrashedSidecarGoesToAnother() throws IOException, InterruptedException {
+        start(new RemoteSettings(
+            Duration.ofMillis(10), Duration.ofMillis(200), Duration.ofMillis(20), Duration.ofSeconds(30), Duration.ofMillis(200)));
         final CountDownLatch started = new CountDownLatch(1);
         final TestSidecar stuck = sidecar("worker-a", 1, attempt -> {
             started.countDown();
@@ -109,7 +114,7 @@ class RemoteNodeTest {
 
         final TaskResult result = await("task-1");
         assertEquals(TaskStatus.DONE, result.status(), result.error());
-        assertEquals("2", result.meta().get(TaskQueue.ATTEMPTS));
+        assertEquals("1", result.meta().get(TaskQueue.ATTEMPTS));
     }
 
     @Test
@@ -142,7 +147,8 @@ class RemoteNodeTest {
 
     @Test
     void taskOfAKindWithoutSidecarsFails() throws IOException {
-        start(new RemoteSettings(Duration.ofMillis(10), Duration.ofMillis(200), Duration.ofMillis(20), Duration.ofMillis(200)));
+        start(new RemoteSettings(
+            Duration.ofMillis(10), Duration.ofMillis(200), Duration.ofMillis(20), Duration.ofMillis(200), Duration.ofSeconds(15)));
         sidecar("worker-a", 1, attempt -> new byte[0]);
 
         submit("task-1", Map.of(Worker.KIND, "render", "client.request-id", "r-1"));

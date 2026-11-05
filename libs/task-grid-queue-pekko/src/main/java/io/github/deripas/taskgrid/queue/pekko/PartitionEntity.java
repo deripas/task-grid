@@ -78,7 +78,13 @@ final class PartitionEntity extends EventSourcedBehavior<PartitionEntity.Command
     ) implements Command {
     }
 
-    record Complete(AttemptResult result) implements Command {
+    /**
+     * Replies once the result is persisted, or at once if the attempt is not in progress (it is ignored).
+     */
+    record Complete(
+        AttemptResult result,
+        ActorRef<Done> replyTo
+    ) implements Command {
     }
 
     record Tick() implements Command {
@@ -208,7 +214,8 @@ final class PartitionEntity extends EventSourcedBehavior<PartitionEntity.Command
         return newCommandHandlerBuilder()
             .forAnyState()
             .onCommand(Submit.class, this::submit)
-            .onCommand(Complete.class, (state, c) -> persist(state.completed(c.result(), now())))
+            .onCommand(Complete.class, (state, c) -> persist(state.completed(c.result(), now()))
+                .thenReply(c.replyTo(), s -> Done.getInstance()))
             .onCommand(Tick.class, (state, t) -> persist(state.tick(now())))
             .onCommand(Delivered.class, this::delivered)
             .onCommand(NotDelivered.class, this::notDelivered)

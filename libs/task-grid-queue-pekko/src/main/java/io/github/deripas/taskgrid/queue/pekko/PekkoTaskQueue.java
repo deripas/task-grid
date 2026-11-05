@@ -31,7 +31,7 @@ import java.util.concurrent.CompletionStage;
  *   <li>Ready attempts go to the {@link ReadyCallback}s of the node where their partition lives; connect them to
  *   a worker of that node ({@code Dispatcher}).</li>
  *   <li>{@link #complete} may be called on any node: the partition is found by the partition key in the meta of the
- *   result. A result lost on the way leaves the attempt to its deadline ({@link QueueSettings#attemptTimeout}).</li>
+ *   result; it completes once the result is in the journal, so the worker may forget it only then.</li>
  *   <li>Final results go to the result store and the {@link ResultCallback}s of the node of the partition, again
  *   until all of them succeed (at least once), also after a restart.</li>
  * </ul>
@@ -91,9 +91,10 @@ public final class PekkoTaskQueue implements TaskQueue {
     }
 
     @Override
-    public void complete(AttemptResult result) {
-        sharding.entityRefFor(PartitionEntity.TYPE_KEY, PartitionEntity.entityId(result.taskId(), result.meta()))
-            .tell(new PartitionEntity.Complete(result));
+    public CompletionStage<Void> complete(AttemptResult result) {
+        return sharding.entityRefFor(PartitionEntity.TYPE_KEY, PartitionEntity.entityId(result.taskId(), result.meta()))
+            .<Done>ask(replyTo -> new PartitionEntity.Complete(result, replyTo), askTimeout)
+            .thenApply(done -> null);
     }
 
     @Override

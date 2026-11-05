@@ -97,6 +97,7 @@ queued twice) and an error otherwise (the id is taken by another request).
 - No lease yet: when a session ends, its attempts in progress are retried (`RETRY`, the attempt counts). A late result
   of such an attempt is ignored by the queue. Cost - a repeated execution after a network break. Lease (`Extend`,
   deadline) and incarnation come with the cluster, where an attempt must outlive a node; graceful stop - D15.
+  (Superseded by D29: attempts belong to the sidecar process, no lease needed.)
 - Affinity follows the task: with `affinity-key` in meta - HRW over the sidecars of the kind, widened after
   affinity-wait; without it - any sidecar. No per-kind rule in settings. (Separated from the partition of the queue -
   D23.)
@@ -110,7 +111,8 @@ queued twice) and an error otherwise (the id is taken by another request).
   the results of its attempts in progress and closes the stream with OK. Cancellation of the call still ends the
   session at once, its attempts are retried. No separate `Drain` RPC.
 - One session with one node (`NODE_ADDRESS`). Sessions with every node of a cluster (DNS), lease and restart detection
-  come with the cluster engine; the credit ledger already distributes slots among several sessions.
+  come with the cluster engine; the credit ledger already distributes slots among several sessions. (Superseded by
+  D29.)
 - The handler gets the whole task meta as `x-meta-<key>` metadata. Handler statuses map to `DONE` / `FAILED` / `RETRY`
   only; `RESOURCE_EXHAUSTED` and `ABORTED` are `RETRY` until `RATE_LIMITED` / `RELEASED` exist.
 - Results above `MAX_RESULT` (4 MiB, the inbound limit of the Java gRPC server) fail until blob storage exists
@@ -217,7 +219,7 @@ partition. The rules of the pause below still hold, except the one about rejecte
 - Two implementations behind `FetchRequests`, chosen by a setting rather than by a property of the queue: the
   behaviour depends on the infrastructure too (sharding by the exchange), and during the move both must run on the
   same code; the transitional one is dropped as a whole later.
-- Typed protocol `crawler.urlmanager.v1` (module `url-manager-api`): `FetchRequest{request_id, url, timeout_ms}` ->
+- Typed protocol `crawler.urlmanager.v1` (module `url-manager-api`, folded into url-manager by D28): `FetchRequest{request_id, url, timeout_ms}` ->
   `FetchReply{request_id, page | refusal}`. The page body goes in the reply as is, up to the 100 MiB of the fetcher -
   `max_message_size` of the broker must allow it (RabbitMQ 4: 16 MiB by default); the production url-manager already
   passes such volumes through RabbitMQ.
@@ -282,8 +284,8 @@ partition. The rules of the pause below still hold, except the one about rejecte
   closed: the node keeps the attempts of such a session "in progress", the sidecar neither reconnects nor delivers
   results. Both ends ping, also without calls.
 - Sidecar -> node: `NODE_KEEPALIVE_TIME` 10s, `NODE_KEEPALIVE_TIMEOUT` 5s - a hung node is found in ~15 s. Node:
-  pings each connection after `url-manager.grpc-keepalive.time` (30s) of quiet, closes it after `timeout` (10s) -
-  the session ends and its attempts are retried; permits pings of sidecars every `permit-time` (5s).
+  pings each connection after `url-manager.grpc-keepalive.time` (10s, was 30s until D29) of quiet, closes it after
+  `timeout` (5s) - the session ends (its attempts - D29); permits pings of sidecars every `permit-time` (5s).
 - Sidecar -> handler: `HANDLER_KEEPALIVE_TIME` 30s / `HANDLER_KEEPALIVE_TIMEOUT` 10s; the handler must permit pings
   every 10s without calls (fetcher does) - convention in [handler-sidecar/README.md](../handler-sidecar/README.md).
 - grpc-java and grpc-go raise a keepalive time below 10s to 10s; the default of a server allows a client ping per
@@ -327,3 +329,69 @@ partition. The rules of the pause below still hold, except the one about rejecte
 - Known gap until 14c: `complete` is a tell and `NodeService` answers the sidecar before the partition persisted the
   result; a result lost on the way waits for the attempt timeout. With sessions to every node the answer will wait for
   the partition.
+
+## D28. url-manager in a cluster: RabbitMQ after-submit only, results taken after the journal
+
+- `url-manager.queue: memory | cluster`. Cluster: `PekkoTaskQueue` on an actor system of the node (`PekkoCluster`,
+  in `app`), journal and snapshots in ScyllaDB through `pekko-persistence-cassandra`; keyspaces and tables -
+  `url-manager/cql/schema.cql`, applied beforehand (autocreate of the plugin raced with the first recoveries: the
+  snapshot keyspace did not exist yet). Addresses, seed nodes and contact points come from
+  `url-manager.cluster.*`, the rest from `application.conf`: Split Brain Resolver `keep-majority`, frame 1 MiB for inline
+  results. The node joins after its gRPC server starts and leaves before it stops: partitions hand off while sidecars
+  can still deliver results.
+- Crawl-delay holds across the cluster: a host is one partition. Requests come over RabbitMQ with `ack: after-submit`
+  - the reply is sent by `onResult` on the node of the partition. `after-reply` and `POST /fetch` need the result on the
+  node that took the request: refused / off in cluster mode until results can be awaited on any node (to discuss with
+  the gRPC client protocol, roadmap 15). Without a consistent-hash exchange `after-reply` of the memory mode works but
+  keeps the crawl-delay per instance only.
+- A result is taken only once the queue has it: `TaskQueue.complete` and `AttemptCallback.complete` return a stage,
+  `Sidecars.complete` waits for it, `Complete` answers OK after the partition persisted the result (`UNAVAILABLE`
+  otherwise - the sidecar sends it again, also to a restarted node). Closes the gap of D27.
+- `url-manager-api` is folded into url-manager: no second consumer of `url_manager.proto` yet.
+
+## D29. Sidecar sessions with every node; attempts belong to the sidecar process
+
+- `NODE_ADDRESS` is a DNS name of all the nodes (k8s headless service, a shared network alias); the sidecar resolves it
+  every `NODE_RESOLVE_INTERVAL` (10s) and keeps a session with each address. IPv4 addresses if any, else IPv6: a
+  dual-stack name lists each node twice. A node gone from the name keeps its session until it ends, no reconnect.
+  One credit ledger for all the sessions: free slots go to the node with the largest unmet demand.
+- Pool metrics: the sidecar tells each node its share, `Share{capacity / sessions}`, when the number of its sessions
+  changes; `capacity` of a node is the sum of the shares, the sum over the nodes is the pool (D25).
+- An attempt in progress belongs to the sidecar process, not to its session: `Hello.instance_id` is random per start
+  of the process, `worker_id` (pod name) survives a restart. Addresses are not used to tell processes apart (NAT,
+  proxies). On the node:
+  - a new session of the same worker supersedes the previous one only as the channel (send to the latest); with the
+    same instance id the attempts stay in progress, their results may come through any session or node;
+  - another instance id - the process was restarted and lost its attempts: they are reassigned at once;
+  - the session broke (no drain) - the attempts wait `rejoin-timeout` (15s) for the process to reconnect, then are
+    reassigned; a draining sidecar that breaks the session (drain timeout) is not waited for;
+  - reassigned - back to wait for credit of other sidecars of the kind with the same attempt number: the queue does not
+    see it and `maxAttempts` is not spent. A late result of the old sidecar is harmless - the queue takes the first one
+    for the attempt. Endless reassignment is bounded by the attempt timeout of the queue.
+- Fast detection makes the wait short: a killed process closes its sockets (RST) at once; a silent loss (a machine
+  gone, a hung path) is found by keepalive, now 10s/5s on both ends (~15 s).
+- A result goes to the node the attempt came from while that node is known (a node with a queue of its own - memory
+  mode - would ignore it elsewhere); when it is gone from the name, the tries go round the other nodes: in a cluster
+  any node finds the partition by the meta. `RemoteWorker.complete` frees the attempt on the node that has it, others
+  just pass the result to the queue.
+- Node stop: sessions are closed, attempts in progress are left to their sidecars (their results go to another node;
+  the attempt timeout of the queue is the backstop); attempts waiting for credit, and those assigned after the stop,
+  are reported as `RETRY` instead of rejected - a reject failed the task.
+
+## D30. docker-compose stand with both ways to run url-manager
+
+- `crawler-example/stand/compose.yaml`, profiles `memory` and `cluster`, one at a time (`make stand PROFILE=...`).
+  Clients are the same for both: `FetchRequest` to the exchange `url-manager.fetch` of type `x-consistent-hash`,
+  routing key = host, as in production. The profile decides what is bound behind it (`rabbitmq/<profile>/
+  definitions.json`): `memory` - a queue per instance (crawl-delay per instance holds because a host always lands on
+  the same one), `cluster` - one queue for all the nodes. The exchange and queues are infrastructure: url-manager
+  declares only its own queue, as before.
+- A fetcher and its sidecar are a pod: `network_mode: service:fetcher-N`, the handler on localhost. The url-managers
+  share a network alias - the DNS name of all the nodes the sidecars connect to (D29).
+- Images copy the build output (Spring Boot jar of url-manager; `fetcher.jar` with `lib/`), no build inside Docker:
+  `make stand` packages first, `StandIT` runs after the package phase.
+- `StandIT` (Testcontainers `ComposeContainer`, Maven profile `stand`, `make stand-it`; minutes, so not in
+  `make it`): both profiles under 41 requests over five hosts; `memory` restarts its busiest instance, `cluster`
+  loses a node for good; every page must come and a host is fetched no more often than the crawl-delay (journal of
+  the WireMock site). It replaces the in-JVM test of two memory instances planned before: one DNS name cannot point to
+  two ports of the test JVM, so a sidecar could not reach both.

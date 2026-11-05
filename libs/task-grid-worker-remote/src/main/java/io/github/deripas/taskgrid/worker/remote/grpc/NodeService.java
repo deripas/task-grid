@@ -4,6 +4,7 @@ import io.github.deripas.taskgrid.task.AttemptResult;
 import io.github.deripas.taskgrid.task.AttemptStatus;
 import io.github.deripas.taskgrid.task.Blob;
 import io.github.deripas.taskgrid.worker.remote.Session;
+import io.github.deripas.taskgrid.worker.remote.SidecarHello;
 import io.github.deripas.taskgrid.worker.remote.Sidecars;
 import io.github.deripas.taskgrid.worker.remote.v1.BlobRef;
 import io.github.deripas.taskgrid.worker.remote.v1.CompleteRequest;
@@ -50,9 +51,15 @@ public final class NodeService extends NodeGrpc.NodeImplBase {
                 .asRuntimeException());
             return;
         }
-        sidecars.complete(request.getWorkerId(), toDomain(request, status));
-        responses.onNext(CompleteResponse.getDefaultInstance());
-        responses.onCompleted();
+        // OK only once the result is taken (in the journal of a persistent queue): otherwise the sidecar sends it again
+        sidecars.complete(request.getWorkerId(), toDomain(request, status)).whenComplete((ignored, error) -> {
+            if (error == null) {
+                responses.onNext(CompleteResponse.getDefaultInstance());
+                responses.onCompleted();
+            } else {
+                responses.onError(Status.UNAVAILABLE.withDescription("result not taken: " + error).asRuntimeException());
+            }
+        });
     }
 
     /**
@@ -117,6 +124,7 @@ public final class NodeService extends NodeGrpc.NodeImplBase {
                         session.credit(message.getCredit().getLimit(), message.getCredit().getVersion());
                     }
                 }
+                case SHARE -> share(message.getShare().getCapacity());
                 case MSG_NOT_SET -> violation("empty message");
             }
         }
@@ -149,10 +157,22 @@ public final class NodeService extends NodeGrpc.NodeImplBase {
         private void hello(Hello hello) {
             if (session != null) {
                 violation("repeated hello");
-            } else if (hello.getWorkerId().isBlank() || hello.getKind().isBlank() || hello.getCapacity() < 1) {
-                violation("worker_id, kind and capacity >= 1 are required");
+            } else if (hello.getWorkerId().isBlank() || hello.getInstanceId().isBlank() || hello.getKind().isBlank()
+                || hello.getCapacity() < 1) {
+                violation("worker_id, instance_id, kind and capacity >= 1 are required");
             } else {
-                session = sidecars.connect(hello.getWorkerId(), hello.getKind(), hello.getCapacity(), channel);
+                session = sidecars.connect(
+                    new SidecarHello(hello.getWorkerId(), hello.getInstanceId(), hello.getKind(), hello.getCapacity()), channel);
+            }
+        }
+
+        private void share(double capacity) {
+            if (session == null) {
+                violation("hello must be the first message");
+            } else if (!(capacity > 0) || Double.isInfinite(capacity)) {
+                violation("share: capacity must be positive");
+            } else {
+                session.share(capacity);
             }
         }
 

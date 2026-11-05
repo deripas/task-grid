@@ -57,6 +57,10 @@ public final class Dispatcher implements ReadyCallback {
 
     private void reject(Attempt attempt, String error) {
         log.debug("Attempt not taken: task={} attempt={} error={}", attempt.task().id(), attempt.number(), error);
-        queue.complete(AttemptResult.failed(attempt, error));
+        queue.complete(AttemptResult.failed(attempt, error)).whenComplete((ignored, e) -> {
+            if (e != null) {
+                log.warn("Rejection not taken by the queue, the attempt waits for its deadline: task={}", attempt.task().id(), e);
+            }
+        });
     }
 }
