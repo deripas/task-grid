@@ -26,7 +26,7 @@ Agreed decisions - [decisions.md](decisions.md), layout - [structure.md](structu
 11. `[x]` **url-manager: synchronous `POST /fetch`.** Spring Boot application on the in-memory core (queue by affinity
    key = host, one fetch per host at a time, no delay yet), remote worker for the `fetch` kind, answer like a proxy,
    large pages streamed from S3; end to end url-manager - sidecar - fetcher - site with SeaweedFS (`UrlManagerIT`).
-12. `[x]` **Crawl-delay.** `task-grid-worker-delayed`: a worker decorator holds the next attempt of an affinity key
+12. `[x]` **Crawl-delay.** `task-grid-worker-delayed`: a worker decorator holds the next attempt of a partition key
    back until a delay after the result of the previous one (finish to start); url-manager - 1 s per host. Delay from
    robots.txt, cooldown after 429 - through `DelayPolicy`, later. Requirements -
    `crawler-maket/domain-queue-requirements.md`.

@@ -98,7 +98,8 @@ queued twice) and an error otherwise (the id is taken by another request).
   of such an attempt is ignored by the queue. Cost - a repeated execution after a network break. Lease (`Extend`,
   deadline) and incarnation come with the cluster, where an attempt must outlive a node; graceful stop - D15.
 - Affinity follows the task: with `affinity-key` in meta - HRW over the sidecars of the kind, widened after
-  affinity-wait; without it - any sidecar. No per-kind rule in settings.
+  affinity-wait; without it - any sidecar. No per-kind rule in settings. (Separated from the partition of the queue -
+  D23.)
 - Payloads are sent inline only; a `Blob.Ref` payload is rejected until blob storage arrives.
 - The engine without Pekko is a single-thread executor around a pure state machine (`Allocator`), which the Pekko
   engine will reuse.
@@ -222,3 +223,15 @@ shutdown timeout of the handler, `DRAIN_TIMEOUT` + margin `< terminationGracePer
   that is not `FetchRequest` or has a bad URL gets `CODE_INVALID`.
 - Spring AMQP of Spring Boot (`spring.rabbitmq.*`), manual acknowledgement on the channel of the delivery, from
   virtual threads.
+
+## D23. Partition key and affinity key are separate
+
+- One key had two roles that differ by kind. `partition-key` (`TaskQueue.PARTITION_KEY`) - correctness: tasks of a key
+  run one at a time, in order, with the crawl-delay of `DelayedWorker`; every kind of the crawler sets it to the host.
+  `affinity-key` (`Worker.AFFINITY_KEY`) - an optimization of a pool: HRW to the same sidecar for warm connections;
+  `fetch` sets it to the host, renderers that start a browser per page do not (any free instance, no wait).
+- The submitter sets them per task: it chooses the kind anyway. Not a per-kind setting of the node (one name would
+  still mean two things, and the setting would live away from whoever knows the pool), not yet a flag in `Hello` of
+  the sidecar - possible later on top of the key.
+- Each key is declared by the component it belongs to; `DelayedWorker` reads the partition key and may depend on the
+  `queue` port package for it (its `ArchitectureTest`). Replaces the single `affinity-key` of D14.

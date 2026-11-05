@@ -74,7 +74,7 @@ class LocalNodeTest {
             final String id = "task-" + i;
             ids.add(id);
             submittedByKey.computeIfAbsent(key, k -> new ArrayList<>()).add(id);
-            submit(id, Map.of(Worker.KIND, "echo", Task.AFFINITY_KEY, key));
+            submit(id, Map.of(Worker.KIND, "echo", TaskQueue.PARTITION_KEY, key));
         }
 
         for (String id : ids) {
@@ -118,7 +118,7 @@ class LocalNodeTest {
     }
 
     private Blob echo(Attempt attempt) throws InterruptedException {
-        final String key = attempt.task().meta().getOrDefault(Task.AFFINITY_KEY, attempt.task().id());
+        final String key = attempt.task().meta().getOrDefault(TaskQueue.PARTITION_KEY, attempt.task().id());
         final AtomicInteger perKey = runningByKey.computeIfAbsent(key, k -> new AtomicInteger());
         maxRunningPerKey.accumulateAndGet(perKey.incrementAndGet(), Math::max);
         maxRunning.accumulateAndGet(running.incrementAndGet(), Math::max);

@@ -14,6 +14,13 @@ public interface TaskQueue {
     String ATTEMPTS = "attempts";
 
     /**
+     * Task meta: tasks with the same value run one at a time, in order - one partition of the queue (for crawling -
+     * a domain: politeness, crawl-delay). Absent - the task is independent. Where the attempts run is
+     * {@link io.github.deripas.taskgrid.worker.Worker#AFFINITY_KEY}.
+     */
+    String PARTITION_KEY = "partition-key";
+
+    /**
      * Completes when the queue has accepted the task.
      */
     CompletionStage<Void> submit(Task task);

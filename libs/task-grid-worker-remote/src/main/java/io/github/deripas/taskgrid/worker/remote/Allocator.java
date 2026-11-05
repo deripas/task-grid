@@ -2,9 +2,9 @@ package io.github.deripas.taskgrid.worker.remote;
 
 import io.github.deripas.taskgrid.task.Attempt;
 import io.github.deripas.taskgrid.task.AttemptResult;
-import io.github.deripas.taskgrid.task.Task;
 import io.github.deripas.taskgrid.worker.Assignment;
 import io.github.deripas.taskgrid.worker.AttemptCallback;
+import io.github.deripas.taskgrid.worker.Worker;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
@@ -25,7 +25,7 @@ import java.util.concurrent.ThreadLocalRandom;
  * <ul>
  *   <li>An attempt waits for credit of its candidates. Demand for a sidecar - how many waiting attempts name it
  *   (above capacity - in steps); the sidecar grants free slots as credit.</li>
- *   <li>With an affinity key ({@link Task#AFFINITY_KEY}): the candidate is the best sidecar by HRW(key, worker id);
+ *   <li>With an affinity key ({@link Worker#AFFINITY_KEY}): the candidate is the best sidecar by HRW(key, worker id);
  *   no credit within affinity-wait - the three best, within twice as long - all.</li>
  *   <li>Without one: two random sidecars, after spread-wait - all; credit of any sidecar takes such an attempt.</li>
  *   <li>Credit without a matching attempt is returned (Demand with target below limit).</li>
@@ -454,7 +454,7 @@ final class Allocator {
             this.attempt = attempt;
             this.reply = reply;
             this.since = since;
-            this.key = attempt.task().meta().get(Task.AFFINITY_KEY);
+            this.key = attempt.task().meta().get(Worker.AFFINITY_KEY);
         }
 
         String taskId() {

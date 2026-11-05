@@ -11,6 +11,7 @@ import io.github.deripas.taskgrid.task.TaskResult;
 import io.github.deripas.taskgrid.task.TaskStatus;
 import io.github.deripas.taskgrid.worker.Assignment;
 import io.github.deripas.taskgrid.worker.AttemptCallback;
+import io.github.deripas.taskgrid.worker.Worker;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -91,6 +92,19 @@ class MemoryTaskQueueTest {
         assertEquals("2", first.getFirst().meta().get(TaskQueue.ATTEMPTS));
         assertEquals(first, second);
         assertTrue(results.await("t", Duration.ZERO).toCompletableFuture().join().isPresent());
+    }
+
+    /**
+     * The queue serializes by the partition key only; the affinity key is about where attempts run.
+     */
+    @Test
+    void onlyThePartitionKeySerializesTasks() {
+        submit(new Task("p1", Blob.of(new byte[0]), Map.of(TaskQueue.PARTITION_KEY, "a.com")));
+        submit(new Task("p2", Blob.of(new byte[0]), Map.of(TaskQueue.PARTITION_KEY, "a.com")));
+        submit(new Task("w1", Blob.of(new byte[0]), Map.of(Worker.AFFINITY_KEY, "b.com")));
+        submit(new Task("w2", Blob.of(new byte[0]), Map.of(Worker.AFFINITY_KEY, "b.com")));
+
+        assertEquals(List.of("p1", "w1", "w2"), assigned.stream().map(a -> a.task().id()).toList());
     }
 
     private void submit(Task task) {

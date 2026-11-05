@@ -106,7 +106,7 @@ class DelayedWorkerTest {
     void rejectedAttemptLeavesNoPause() {
         start(attempt -> {
         });
-        queue.submit(new Task("x1", Blob.of(new byte[0]), Map.of(Worker.KIND, "unknown", Task.AFFINITY_KEY, "a.com")));
+        queue.submit(new Task("x1", Blob.of(new byte[0]), Map.of(Worker.KIND, "unknown", TaskQueue.PARTITION_KEY, "a.com")));
         submit("a1", "a.com");
 
         final TaskResult rejected = results.await("x1", WAIT).toCompletableFuture().join().orElseThrow();
@@ -132,7 +132,7 @@ class DelayedWorkerTest {
     private void submit(String id, String key) {
         final Map<String, String> meta = new HashMap<>(Map.of(Worker.KIND, "fetch"));
         if (key != null) {
-            meta.put(Task.AFFINITY_KEY, key);
+            meta.put(TaskQueue.PARTITION_KEY, key);
         }
         queue.submit(new Task(id, Blob.of(new byte[0]), meta)).toCompletableFuture().join();
     }

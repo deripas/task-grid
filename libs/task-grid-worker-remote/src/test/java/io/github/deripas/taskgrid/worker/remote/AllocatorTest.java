@@ -6,6 +6,7 @@ import io.github.deripas.taskgrid.task.AttemptStatus;
 import io.github.deripas.taskgrid.task.Blob;
 import io.github.deripas.taskgrid.task.Task;
 import io.github.deripas.taskgrid.worker.Assignment;
+import io.github.deripas.taskgrid.worker.Worker;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -118,7 +119,7 @@ class AllocatorTest {
         final CompletableFuture<Assignment> reply = assign("x");
         s.credit(1, 1);
         assertEquals(new Assignment.Accepted(), reply.join());
-        assertEquals(Map.of("kind", "k", Task.AFFINITY_KEY, "x"), s.channel.attempts.getFirst().task().meta());
+        assertEquals(Map.of("kind", "k", Worker.AFFINITY_KEY, "x"), s.channel.attempts.getFirst().task().meta());
     }
 
     @Test
@@ -245,7 +246,7 @@ class AllocatorTest {
     private CompletableFuture<Assignment> assign(String key) {
         final Map<String, String> meta = key == null
             ? Map.of("kind", "k")
-            : Map.of("kind", "k", Task.AFFINITY_KEY, key);
+            : Map.of("kind", "k", Worker.AFFINITY_KEY, key);
         final Task task = new Task("t" + (++tasks), Blob.of(new byte[0]), meta);
         final CompletableFuture<Assignment> reply = new CompletableFuture<>();
         allocator.assign(new Attempt(task, 1), reply, T0);

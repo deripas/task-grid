@@ -1,8 +1,8 @@
 package io.github.deripas.crawler.urlmanager.fetch;
 
+import io.github.deripas.taskgrid.queue.TaskQueue;
 import io.github.deripas.taskgrid.task.Attempt;
 import io.github.deripas.taskgrid.task.Blob;
-import io.github.deripas.taskgrid.task.Task;
 import io.github.deripas.taskgrid.worker.Worker;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -35,7 +35,8 @@ class FetchServiceTest {
         assertEquals("page of https://Example.com/a", LocalFetch.text(assertInstanceOf(FetchOutcome.Fetched.class, outcome).page()));
         final Attempt attempt = fetch.attempts().getFirst();
         assertEquals(FetchService.KIND, attempt.task().meta().get(Worker.KIND));
-        assertEquals("example.com", attempt.task().meta().get(Task.AFFINITY_KEY));
+        assertEquals("example.com", attempt.task().meta().get(TaskQueue.PARTITION_KEY));
+        assertEquals("example.com", attempt.task().meta().get(Worker.AFFINITY_KEY));
     }
 
     @Test

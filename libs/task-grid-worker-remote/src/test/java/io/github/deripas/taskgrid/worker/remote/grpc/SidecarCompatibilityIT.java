@@ -133,7 +133,7 @@ class SidecarCompatibilityIT {
         for (int i = 0; i < 40; i++) {
             final String id = "task-" + i;
             ids.add(id);
-            submit(id, "sleep:20", Map.of(Worker.KIND, "echo", Task.AFFINITY_KEY, "key-" + (i % 8), "client.request-id", "r-" + i));
+            submit(id, "sleep:20", Map.of(Worker.KIND, "echo", Worker.AFFINITY_KEY, "key-" + (i % 8), "client.request-id", "r-" + i));
         }
 
         for (int i = 0; i < ids.size(); i++) {

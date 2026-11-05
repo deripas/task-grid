@@ -18,7 +18,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Partition of the queue: the tasks of one affinity key, in order, one attempt in progress at a time, retries by attempt status.
+ * Partition of the queue: the tasks of one partition key, in order, one attempt in progress at a time, retries by attempt status.
  * <p>
  * Pure state machine: no threads, no engine. Methods are called one at a time by an engine (in-memory, actor),
  * which carries out the {@link Output} actions: assigning attempts to the worker and storing final results.

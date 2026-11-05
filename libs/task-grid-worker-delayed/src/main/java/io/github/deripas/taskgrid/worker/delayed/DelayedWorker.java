@@ -1,8 +1,8 @@
 package io.github.deripas.taskgrid.worker.delayed;
 
+import io.github.deripas.taskgrid.queue.TaskQueue;
 import io.github.deripas.taskgrid.task.Attempt;
 import io.github.deripas.taskgrid.task.AttemptResult;
-import io.github.deripas.taskgrid.task.Task;
 import io.github.deripas.taskgrid.worker.Assignment;
 import io.github.deripas.taskgrid.worker.AttemptCallback;
 import io.github.deripas.taskgrid.worker.Worker;
@@ -20,15 +20,15 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 /**
- * Worker decorator: the next attempt of an affinity key goes to the wrapped worker not earlier than
+ * Worker decorator: the next attempt of a partition key ({@link TaskQueue#PARTITION_KEY}) goes to the wrapped worker not earlier than
  * {@link DelayPolicy#after} the result of the previous one (finish to start: the pause counts from the moment
  * the result came, however long the attempt took).
  * <ul>
- *   <li>The queue runs one attempt of a key at a time, so there is one pause per key; this worker only holds
+ *   <li>The queue runs one attempt of a partition at a time, so there is one pause per key; this worker only holds
  *   the next attempt back. It keeps nothing but the end of the pause of keys that have one.</li>
  *   <li>Every result counts - DONE, FAILED, RETRY: each was a request to the site. Retries wait too.</li>
  *   <li>An attempt the wrapped worker rejected made no request: no pause after it.</li>
- *   <li>Tasks without an affinity key and the first attempt of a key are not held back.</li>
+ *   <li>Tasks without a partition key and the first attempt of a key are not held back.</li>
  * </ul>
  * The pause ends when it is due, not when it is polled: a timer of its own thread hands the attempt over.
  */
@@ -69,7 +69,7 @@ public final class DelayedWorker implements Worker, AutoCloseable {
 
     @Override
     public CompletionStage<Assignment> assign(Attempt attempt) {
-        final String key = attempt.task().meta().get(Task.AFFINITY_KEY);
+        final String key = attempt.task().meta().get(TaskQueue.PARTITION_KEY);
         if (key == null) {
             return worker.assign(attempt);
         }

@@ -21,8 +21,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 
 /**
- * Fetch of one page as a task of task-grid: kind {@value #KIND}, affinity key - the host, so fetches of a host run
- * one at a time, in order. The result is either waited for here, within the timeout of the client, or delivered
+ * Fetch of one page as a task of task-grid: kind {@value #KIND}, partition key - the host, so fetches of a host run
+ * one at a time, in order, with a pause; affinity key - the host too, so they go to the same fetcher (its connections
+ * to the site stay warm). The result is either waited for here, within the timeout of the client, or delivered
  * to a {@link FetchCallback} on the node where the task finished, together with the tags given on submit.
  */
 @Slf4j
@@ -66,7 +67,9 @@ public final class FetchService {
         final Map<String, String> meta = new HashMap<>();
         tags.forEach((key, value) -> meta.put(TAG + key, value));
         meta.put(Worker.KIND, KIND);
-        meta.put(Task.AFFINITY_KEY, url.host());
+        // one fetch of a host at a time, with its crawl-delay; on the same fetcher instance: warm connections
+        meta.put(TaskQueue.PARTITION_KEY, url.host());
+        meta.put(Worker.AFFINITY_KEY, url.host());
         queue.submit(new Task(id, Blob.of(codec.request(url)), meta)).toCompletableFuture().join();
     }
 

@@ -26,7 +26,8 @@ A future would not survive a cluster: the result may arrive at another node than
 | **Task** | Unit of work submitted by a client: id (set by the client), payload, meta. |
 | **Meta** | Small string properties of a task; see [Meta](#meta). |
 | **Kind** | Meta key `kind`. Type of work. Selects the handlers able to execute the task; core does not interpret it. |
-| **Affinity key** | Meta key `affinity-key`, optional. Tasks with the same key run one at a time, in order, and preferably on the same handler instance (for crawling - a domain: politeness and warm caches); `DelayedWorker` can add a pause between them (crawl-delay). Not set - the task is independent. One key for both roles until a case needs them apart. |
+| **Partition key** | Meta key `partition-key` (`TaskQueue.PARTITION_KEY`), optional. Tasks with the same key run one at a time, in order - one partition of the queue; `DelayedWorker` adds a pause between them (crawl-delay). For crawling - the host: politeness, for every kind. Not set - the task is independent. |
+| **Affinity key** | Meta key `affinity-key` (`Worker.AFFINITY_KEY`), optional. Attempts with the same key preferably run on the same handler instance (warm connections, caches); not set - any free instance. An optimization of a pool, independent of the partition key: `fetch` sets both to the host, a renderer that starts a browser per page sets only the partition key. |
 | **Attempt** | One execution of a task, numbered from 1. A task has one or more attempts. |
 | **Worker** | Core port: executes attempts. In-process implementation calls handlers in the JVM; remote one sends attempts to sidecars. The prototype called it `Dispatch`. |
 | **Handler** | The code doing the work for a kind: a Java interface in the JVM, or a process behind a sidecar exposing one unary gRPC method (for example `fetcher`). |
@@ -40,9 +41,10 @@ A future would not survive a cluster: the result may arrive at another node than
 ## Meta
 
 - A component that uses a property declares its key as a constant and reads it in one place
-  (`Worker.KIND`, `TaskQueue.ATTEMPTS`); a key used by several components is declared in `task`
-  (`Task.AFFINITY_KEY`: queue and remote worker). A missing required key is a rejection, not a crash.
-- Keys of task-grid are short (`kind`, `affinity-key`); keys of an application carry its prefix (`crawler.`, `client.`).
+  (`Worker.KIND`, `Worker.AFFINITY_KEY`, `TaskQueue.ATTEMPTS`, `TaskQueue.PARTITION_KEY`); a decorator may read the key
+  of the component it serves (`DelayedWorker` - the partition key). A missing required key is a rejection, not a crash.
+- Keys of task-grid are short (`kind`, `partition-key`, `affinity-key`); keys of an application carry its prefix
+  (`crawler.`, `client.`).
 - The whole task meta goes to the handler and into the result. Meta is small: large data belongs to the payload.
 
 ## Packages of task-grid-core

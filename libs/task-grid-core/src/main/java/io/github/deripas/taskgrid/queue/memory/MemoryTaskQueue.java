@@ -24,8 +24,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
 
 /**
- * Task queue of a single node, in memory: a {@link Partition} per affinity key, all of them under one lock.
- * A task without an affinity key gets a partition of its own. Queued tasks are lost when the process stops.
+ * Task queue of a single node, in memory: a {@link Partition} per partition key, all of them under one lock.
+ * A task without a partition key gets a partition of its own. Queued tasks are lost when the process stops.
  */
 @Slf4j
 public final class MemoryTaskQueue implements TaskQueue, AttemptCallback {
@@ -64,9 +64,9 @@ public final class MemoryTaskQueue implements TaskQueue, AttemptCallback {
                     ? CompletableFuture.completedFuture(null)
                     : CompletableFuture.failedFuture(new IllegalArgumentException("task id is taken by another payload: " + task.id()));
             }
-            final String affinityKey = task.meta().get(Task.AFFINITY_KEY);
-            final String key = affinityKey != null
-                ? affinityKey
+            final String partitionKey = task.meta().get(PARTITION_KEY);
+            final String key = partitionKey != null
+                ? partitionKey
                 : UUID.randomUUID().toString();
             queuedById.put(task.id(), new Queued(key, hash));
             final Partition partition = partitions.computeIfAbsent(key, k -> new Partition(settings, new Engine(k)));

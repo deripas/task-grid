@@ -16,6 +16,13 @@ public interface Worker {
     String KIND = "kind";
 
     /**
+     * Task meta: attempts with the same value preferably run on the same handler instance (warm connections and
+     * caches); a worker that has several instances follows it, waiting a little for the preferred one. Absent - any
+     * free instance. Independent of the partition of the queue: set both when both are wanted.
+     */
+    String AFFINITY_KEY = "affinity-key";
+
+    /**
      * Completes when the attempt is accepted for execution or rejected.
      */
     CompletionStage<Assignment> assign(Attempt attempt);

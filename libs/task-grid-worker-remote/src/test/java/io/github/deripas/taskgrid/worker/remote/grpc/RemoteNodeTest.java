@@ -70,7 +70,7 @@ class RemoteNodeTest {
         for (int i = 0; i < 100; i++) {
             final String id = "task-" + i;
             ids.add(id);
-            submit(id, Map.of(Worker.KIND, "echo", Task.AFFINITY_KEY, "key-" + (i % 10)));
+            submit(id, Map.of(Worker.KIND, "echo", Worker.AFFINITY_KEY, "key-" + (i % 10)));
         }
 
         for (String id : ids) {
@@ -81,7 +81,7 @@ class RemoteNodeTest {
         final Map<String, Set<String>> workersByKey = new HashMap<>();
         for (TestSidecar s : List.of(a, b)) {
             s.received().forEach(attempt -> workersByKey
-                .computeIfAbsent(attempt.getMetaOrThrow(Task.AFFINITY_KEY), k -> new HashSet<>())
+                .computeIfAbsent(attempt.getMetaOrThrow(Worker.AFFINITY_KEY), k -> new HashSet<>())
                 .add(s.workerId()));
         }
         assertEquals(10, workersByKey.size());
