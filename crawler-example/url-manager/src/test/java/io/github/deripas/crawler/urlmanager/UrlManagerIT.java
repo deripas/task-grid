@@ -53,6 +53,7 @@ class UrlManagerIT {
     private static final int S3_PORT = 8333;
     private static final String BUCKET = "results";
     private static final Duration SLOW = Duration.ofMillis(300);
+    private static final Duration CRAWL_DELAY = Duration.ofMillis(500);
     private static final ImageFromDockerfile SIDECAR_IMAGE = new ImageFromDockerfile("task-grid/handler-sidecar-it", false)
         .withDockerfile(Path.of(System.getProperty("handler-sidecar.dir", "../../handler-sidecar"), "Dockerfile"));
     private static final HttpClient HTTP = HttpClient.newHttpClient();
@@ -92,6 +93,7 @@ class UrlManagerIT {
         urlManager = new SpringApplicationBuilder(UrlManagerApplication.class).run(
             "--server.port=0",
             "--url-manager.grpc-port=0",
+            "--url-manager.crawl-delay=" + CRAWL_DELAY.toMillis() + "ms",
             "--url-manager.blob.endpoint=" + s3(""),
             "--url-manager.blob.access-key=any",
             "--url-manager.blob.secret-key=any");
@@ -180,11 +182,11 @@ class UrlManagerIT {
     }
 
     /**
-     * Pages of one host are fetched one at a time; another host does not wait for it ("localhost" and "127.0.0.1"
-     * are different hosts of the same WireMock).
+     * Pages of one host are fetched one at a time, the next one not earlier than the crawl-delay after the previous
+     * answer; another host does not wait for it ("localhost" and "127.0.0.1" are different hosts of the same WireMock).
      */
     @Test
-    void oneFetchOfAHostAtATime() throws Exception {
+    void fetchesOfAHostKeepTheCrawlDelay() throws Exception {
         site.stubFor(get(urlPathMatching("/slow/.*")).willReturn(aResponse().withFixedDelay((int) SLOW.toMillis()).withBody("slow")));
         final List<String> urls = List.of(
             "http://localhost:" + site.port() + "/slow/1",
@@ -203,7 +205,8 @@ class UrlManagerIT {
         assertEquals(3, local.size());
         for (int i = 1; i < local.size(); i++) {
             final long gap = started(local.get(i)) - started(local.get(i - 1));
-            assertTrue(gap >= SLOW.toMillis() - 10, "fetch " + i + " of localhost started " + gap + " ms after the previous one");
+            final long expected = SLOW.toMillis() + CRAWL_DELAY.toMillis();
+            assertTrue(gap >= expected - 10, "fetch " + i + " of localhost started " + gap + " ms after the previous one");
         }
         final long other = started(served("/slow/other", "127.0.0.1").getFirst());
         final long last = started(local.getLast());

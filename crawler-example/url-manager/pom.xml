@@ -28,6 +28,10 @@
         </dependency>
         <dependency>
             <groupId>io.github.deripas</groupId>
+            <artifactId>task-grid-worker-delayed</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.deripas</groupId>
             <artifactId>fetcher-api</artifactId>
         </dependency>
         <dependency>

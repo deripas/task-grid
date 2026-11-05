@@ -67,7 +67,8 @@ class ArchitectureTest {
     static final ArchRule TASK_GRID_IMPLEMENTATIONS_ONLY_IN_APP_AND_GRPC = noClasses()
         .that().resideOutsideOfPackages(BASE + ".app..", BASE + ".grpc..")
         .should().dependOnClassesThat().resideInAnyPackage(
-            TASK_GRID + ".queue.memory..", TASK_GRID + ".result.memory..", TASK_GRID + ".worker.remote..", TASK_GRID + ".worker.local..");
+            TASK_GRID + ".queue.memory..", TASK_GRID + ".result.memory..", TASK_GRID + ".worker.remote..", TASK_GRID + ".worker.local..",
+            TASK_GRID + ".worker.delayed..");
 
     @ArchTest
     static final ArchRule SPRING_ONLY_IN_APP_API_CONFIG_GRPC = noClasses()

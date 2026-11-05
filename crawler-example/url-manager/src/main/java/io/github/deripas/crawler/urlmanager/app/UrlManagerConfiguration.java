@@ -11,6 +11,8 @@ import io.github.deripas.taskgrid.queue.QueueSettings;
 import io.github.deripas.taskgrid.queue.memory.MemoryTaskQueue;
 import io.github.deripas.taskgrid.result.ResultStore;
 import io.github.deripas.taskgrid.result.memory.MemoryResultStore;
+import io.github.deripas.taskgrid.worker.delayed.DelayedWorker;
+import io.github.deripas.taskgrid.worker.delayed.FixedDelay;
 import io.github.deripas.taskgrid.worker.remote.RemoteSettings;
 import io.github.deripas.taskgrid.worker.remote.RemoteWorker;
 import io.github.deripas.taskgrid.worker.remote.grpc.NodeService;
@@ -30,7 +32,8 @@ import java.net.URI;
 import java.time.Clock;
 
 /**
- * Assembly: settings -> task-grid node (queue, results, remote worker, gRPC server) -> adapters -> fetch -> API.
+ * Assembly: settings -> task-grid node (queue, results, crawl-delay, remote worker, gRPC server) -> adapters -> fetch
+ * -> API.
  */
 @Configuration(proxyBeanMethods = false)
 @EnableConfigurationProperties(UrlManagerProperties.class)
@@ -42,17 +45,21 @@ public class UrlManagerConfiguration {
 
     @Bean
     Node node(UrlManagerProperties properties, ResultStore results) {
-        final RemoteWorker[] worker = new RemoteWorker[1];
+        final DelayedWorker[] delayed = new DelayedWorker[1];
+        final RemoteWorker[] remote = new RemoteWorker[1];
         final MemoryTaskQueue queue = new MemoryTaskQueue(new QueueSettings(properties.maxAttempts()), results, callback -> {
-            worker[0] = new RemoteWorker(RemoteSettings.DEFAULTS, callback, Clock.systemUTC());
-            return worker[0];
+            delayed[0] = new DelayedWorker(new FixedDelay(properties.crawlDelay()), callback, inner -> {
+                remote[0] = new RemoteWorker(RemoteSettings.DEFAULTS, inner, Clock.systemUTC());
+                return remote[0];
+            });
+            return delayed[0];
         });
-        return new Node(queue, worker[0]);
+        return new Node(queue, delayed[0], remote[0]);
     }
 
     @Bean
     NodeServer nodeServer(UrlManagerProperties properties, Node node) {
-        return new NodeServer(properties.grpcPort(), new NodeService(node.worker()), properties.shutdownTimeout());
+        return new NodeServer(properties.grpcPort(), new NodeService(node.remote()), properties.shutdownTimeout());
     }
 
     @Bean

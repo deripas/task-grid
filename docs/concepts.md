@@ -26,7 +26,7 @@ A future would not survive a cluster: the result may arrive at another node than
 | **Task** | Unit of work submitted by a client: id (set by the client), payload, meta. |
 | **Meta** | Small string properties of a task; see [Meta](#meta). |
 | **Kind** | Meta key `kind`. Type of work. Selects the handlers able to execute the task; core does not interpret it. |
-| **Affinity key** | Meta key `affinity-key`, optional. Tasks with the same key run one at a time, in order, and preferably on the same handler instance (for crawling - a domain: politeness and warm caches). Not set - the task is independent. One key for both roles until a case needs them apart. |
+| **Affinity key** | Meta key `affinity-key`, optional. Tasks with the same key run one at a time, in order, and preferably on the same handler instance (for crawling - a domain: politeness and warm caches); `DelayedWorker` can add a pause between them (crawl-delay). Not set - the task is independent. One key for both roles until a case needs them apart. |
 | **Attempt** | One execution of a task, numbered from 1. A task has one or more attempts. |
 | **Worker** | Core port: executes attempts. In-process implementation calls handlers in the JVM; remote one sends attempts to sidecars. The prototype called it `Dispatch`. |
 | **Handler** | The code doing the work for a kind: a Java interface in the JVM, or a process behind a sidecar exposing one unary gRPC method (for example `fetcher`). |

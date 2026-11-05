@@ -181,3 +181,17 @@ shutdown timeout of the handler, `DRAIN_TIMEOUT` + margin `< terminationGracePer
 - No starter: `UrlManagerConfiguration` wires the in-memory node (`MemoryTaskQueue`, `MemoryResultStore`,
   `RemoteWorker`), components are not scanned. The gRPC server of the node starts before the web server and stops
   after it, cancelling the sessions: by then nobody waits for results.
+
+## D21. Crawl-delay is a worker decorator, not a queue
+
+- The queue already runs one attempt of an affinity key at a time, in order; politeness only adds a pause between
+  the result of an attempt and the next attempt of its key (finish to start). `DelayedWorker` (module
+  `task-grid-worker-delayed`) wraps any worker and holds that next attempt back; queues stay as they are, and the
+  same decorator serves the cluster engine on the node of the partition. A queue of its own would repeat retries,
+  deduplication and attempt limits of `Partition`.
+- Every result starts the pause - DONE, FAILED, RETRY (each was a request to the site), retries wait too. A rejected
+  assignment made no request: no pause. Tasks without an affinity key and the first attempt of a key are not held.
+  A key is kept only while its pause lasts.
+- The pause comes from the port `DelayPolicy.after(key, result)`: fixed for now (`FixedDelay`, url-manager
+  `crawl-delay: 1s`, including RETRY after a lost session); the result is passed so that the application can later
+  take robots.txt and cooldown after 429 into account without changes of the library.

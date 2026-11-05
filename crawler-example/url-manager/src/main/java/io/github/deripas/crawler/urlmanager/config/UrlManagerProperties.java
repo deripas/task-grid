@@ -11,6 +11,7 @@ import java.time.Duration;
  * @param defaultTimeout  wait for a page when the client gives none
  * @param maxTimeout      upper bound of the timeout of a client
  * @param maxAttempts     attempts per fetch, including the first one
+ * @param crawlDelay      pause of a host after a result before its next fetch
  * @param resultTtl       how long a result nobody waits for is kept
  * @param shutdownTimeout wait for the gRPC server to terminate
  */
@@ -20,6 +21,7 @@ public record UrlManagerProperties(
     Duration defaultTimeout,
     Duration maxTimeout,
     int maxAttempts,
+    Duration crawlDelay,
     Duration resultTtl,
     Duration shutdownTimeout,
     Blob blob

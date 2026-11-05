@@ -16,6 +16,7 @@
     <modules>
         <module>libs/task-grid-core</module>
         <module>libs/task-grid-worker-remote</module>
+        <module>libs/task-grid-worker-delayed</module>
         <module>crawler-example</module>
     </modules>
 
@@ -50,6 +51,11 @@
             <dependency>
                 <groupId>io.github.deripas</groupId>
                 <artifactId>task-grid-worker-remote</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.deripas</groupId>
+                <artifactId>task-grid-worker-delayed</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

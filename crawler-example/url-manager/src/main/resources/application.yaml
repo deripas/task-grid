@@ -17,6 +17,7 @@ url-manager:
   default-timeout: 60s
   max-timeout: 10m
   max-attempts: 3
+  crawl-delay: 1s
   result-ttl: 1m
   shutdown-timeout: 5s
   blob:
