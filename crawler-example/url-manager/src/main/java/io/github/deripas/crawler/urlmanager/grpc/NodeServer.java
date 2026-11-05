@@ -18,9 +18,28 @@ import java.util.concurrent.TimeUnit;
  * Starts before the web server and stops after it: requests of clients still waiting for pages need the sidecars.
  * By then nobody waits for results, so the sessions are cancelled at once (the queue is in memory): sidecars
  * reconnect to the next node.
+ * <p>
+ * Keepalive: sessions live long and may be quiet. The server pings each connection and closes one that does not
+ * answer, so a hung sidecar (the connection is there, nothing passes) loses its session and its attempts are retried;
+ * it accepts the pings of sidecars, which detect a hung node the same way.
  */
 @Slf4j
 public final class NodeServer implements SmartLifecycle {
+    /**
+     * HTTP/2 pings of the connections.
+     *
+     * @param time       ping a connection quiet this long; gRPC raises it to 10s at least
+     * @param timeout    no answer to a ping this long - the connection is closed
+     * @param permitTime pings of a sidecar more often than this close its connection ({@code too_many_pings}): at
+     *                   most the keepalive time of the sidecars ({@code NODE_KEEPALIVE_TIME}, 10s)
+     */
+    public record Keepalive(
+        Duration time,
+        Duration timeout,
+        Duration permitTime
+    ) {
+    }
+
     /**
      * Below the phases of the web server (graceful shutdown, start / stop).
      */
@@ -28,6 +47,7 @@ public final class NodeServer implements SmartLifecycle {
 
     private final int port;
     private final NodeService service;
+    private final Keepalive keepalive;
     private final Duration shutdownTimeout;
     private volatile Server server;
 
@@ -37,10 +57,12 @@ public final class NodeServer implements SmartLifecycle {
     public NodeServer(
         int port,
         NodeService service,
+        Keepalive keepalive,
         Duration shutdownTimeout
     ) {
         this.port = port;
         this.service = service;
+        this.keepalive = keepalive;
         this.shutdownTimeout = shutdownTimeout;
     }
 
@@ -49,6 +71,10 @@ public final class NodeServer implements SmartLifecycle {
         try {
             server = Grpc.newServerBuilderForPort(port, InsecureServerCredentials.create())
                 .addService(service)
+                .keepAliveTime(keepalive.time().toNanos(), TimeUnit.NANOSECONDS)
+                .keepAliveTimeout(keepalive.timeout().toNanos(), TimeUnit.NANOSECONDS)
+                .permitKeepAliveTime(keepalive.permitTime().toNanos(), TimeUnit.NANOSECONDS)
+                .permitKeepAliveWithoutCalls(true)
                 .build()
                 .start();
         } catch (IOException e) {

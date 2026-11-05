@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
@@ -27,6 +28,11 @@ type Config struct {
 	Method      string        // full method name, e.g. /crawler.fetcher.v1.Fetcher/Fetch
 	Timeout     time.Duration // limit of one call
 	MaxResponse int           // bytes; a larger response fails the attempt
+	// HTTP/2 pings, also between calls: a connection without an answer within KeepaliveTimeout is closed and
+	// the calls on it fail (RETRY). gRPC raises KeepaliveTime below 10s to 10s; the handler must permit pings
+	// that often.
+	KeepaliveTime    time.Duration
+	KeepaliveTimeout time.Duration
 }
 
 // RawCodec passes message bodies as is: the sidecar does not know the types of the handler.
@@ -63,6 +69,11 @@ type Client struct {
 func New(cfg Config) (*Client, error) {
 	conn, err := grpc.NewClient(cfg.Target,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                cfg.KeepaliveTime,
+			Timeout:             cfg.KeepaliveTimeout,
+			PermitWithoutStream: true,
+		}),
 		grpc.WithDefaultCallOptions(
 			grpc.ForceCodec(RawCodec{}),
 			grpc.MaxCallRecvMsgSize(cfg.MaxResponse),

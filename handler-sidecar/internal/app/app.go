@@ -35,7 +35,7 @@ func Run() int {
 		return 1
 	}
 	defer h.Close()
-	n, err := node.New(cfg.NodeAddress)
+	n, err := node.New(cfg.Node)
 	if err != nil {
 		log.Error("node client", "err", err)
 		return 1
@@ -56,7 +56,7 @@ func Run() int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
-	log.Info("started", "node", cfg.NodeAddress, "handler", cfg.Handler.Target, "method", cfg.Handler.Method,
+	log.Info("started", "node", cfg.Node.Address, "handler", cfg.Handler.Target, "method", cfg.Handler.Method,
 		"inline_max", cfg.Sidecar.InlineMax, "blob", cfg.Blob.Endpoint, "bucket", cfg.Blob.Bucket, "prefix", cfg.Blob.Prefix)
 	if err := s.Run(ctx); err != nil {
 		// the orchestrator and monitoring must see that the stop was not clean: results are lost

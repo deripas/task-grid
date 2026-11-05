@@ -16,6 +16,10 @@ The handler is a gRPC service with a unary method `rpc M(Req) returns (Resp)` of
 
 Sidecar -> handler:
 - deadline of the call - `HANDLER_TIMEOUT`;
+- HTTP/2 keepalive pings every `HANDLER_KEEPALIVE_TIME` (30s), also between calls: the handler must permit pings that
+  often, also without calls (grpc-java: `permitKeepAliveTime(10s)`, `permitKeepAliveWithoutCalls(true)`; grpc-go:
+  `keepalive.EnforcementPolicy{MinTime: 10s, PermitWithoutStream: true}`), otherwise it closes the connection with
+  `too_many_pings` (the default allows a ping per 5 minutes);
 - metadata - `x-task-id`, `x-attempt` and the whole task meta as `x-meta-<key>`. The key is reduced to the characters
   of a gRPC header: lower case, `[0-9a-z_.-]`, others -> `_`, an own `-bin` suffix -> `_bin`. A value outside printable
   ASCII goes as a binary header `x-meta-<key>-bin`.
@@ -34,6 +38,7 @@ Handler -> sidecar: the status of the attempt follows the gRPC status, the respo
 | | |
 |---|---|
 | Session | one `Connect` stream with the node at `NODE_ADDRESS`: `Hello` (`WORKER_ID`, `KIND`, `CAPACITY`), then credit. Closed by the node with OK - reconnect at once; broken, or the session lived less than a second - after 0.5-1 s |
+| Keepalive | HTTP/2 pings every `NODE_KEEPALIVE_TIME`, also without calls; no answer within `NODE_KEEPALIVE_TIMEOUT` - the connection is closed, the session breaks and the sidecar reconnects. A connection that is open but carries nothing (a hung network path) is found in ~15 s instead of never. The node pings too and drops the session of a hung sidecar: its attempts are retried |
 | Credit | slots belong to the sidecar: unused credit plus attempts in progress <= `CAPACITY`, granted by the demand of the node; surplus credit returned by the node frees the slot. An attempt beyond credit is not executed - `RETRY` |
 | Large result | a response above `INLINE_MAX` is put into the S3 bucket `BLOB_S3_BUCKET` (zstd) under `<BLOB_PREFIX><task id>/<random>`, within the slot of the attempt; `Complete` carries `BlobRef` (`s3://<bucket>/<key>`, size and sha256 of the response before compression). Storage fails - `RETRY`. Objects are not deleted here: give the bucket a lifecycle rule (TTL) on the prefix |
 | Result | `Complete` repeated every `RETRY_INTERVAL` until OK; `INVALID_ARGUMENT` from the node - given up |
@@ -98,6 +103,10 @@ DRAIN_TIMEOUT + margin    <  terminationGracePeriodSeconds (90s)
 | `BLOB_S3_REGION` | - | not set - asked of the storage |
 | `BLOB_S3_SECURE` | `false` | https |
 | `BLOB_PREFIX` | - | of the keys, e.g. `results/1h/` |
+| `NODE_KEEPALIVE_TIME` | `10s` | ping of the connection to the node; gRPC raises lower values to 10s. The node must permit it (url-manager: `grpc-keepalive.permit-time`, 5s) |
+| `NODE_KEEPALIVE_TIMEOUT` | `5s` | no answer to a ping - the connection is closed |
+| `HANDLER_KEEPALIVE_TIME` | `30s` | ping of the connection to the handler, see the handler convention |
+| `HANDLER_KEEPALIVE_TIMEOUT` | `10s` | |
 | `RETRY_INTERVAL` | `1s` | pause between repeats of `Complete` |
 | `DRAIN_TIMEOUT` | `60s` | |
 | `LOG_LEVEL` | `info` | `debug` - a line per attempt |

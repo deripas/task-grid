@@ -270,6 +270,23 @@ partition. The rules of the pause below still hold, except the one about rejecte
   throughput-bound pools (`fetch`, js-render) keep `busy / capacity` near a target (80%), latency-bound ones
   (page-speed) scale up as soon as `waiting > 0`.
 - In a cluster each node reports its own view; `waiting` and `busy` add up, `capacity` of a sidecar connected to every
-  node does not (14c).
+  node does not. Plan for 14c: the sidecar tells each node its share, `capacity / sessions` (updated when the number
+  of its sessions changes), so the sum over the nodes is the pool. An average over the nodes would be wrong while
+  a sidecar is connected to some of them only.
 - An attempt without credit within `assignTimeout` was rejected, failing the task - wrong while a pool scales up from
   few or zero pods. Now it is accepted and reported as RETRY: the queue counts the attempt and hands it out again.
+
+## D26. gRPC keepalive on every long-lived connection
+
+- Without HTTP/2 pings a connection that stays open but carries nothing (a hung network path - seen in k8s) is never
+  closed: the node keeps the attempts of such a session "in progress", the sidecar neither reconnects nor delivers
+  results. Both ends ping, also without calls.
+- Sidecar -> node: `NODE_KEEPALIVE_TIME` 10s, `NODE_KEEPALIVE_TIMEOUT` 5s - a hung node is found in ~15 s. Node:
+  pings each connection after `url-manager.grpc-keepalive.time` (30s) of quiet, closes it after `timeout` (10s) -
+  the session ends and its attempts are retried; permits pings of sidecars every `permit-time` (5s).
+- Sidecar -> handler: `HANDLER_KEEPALIVE_TIME` 30s / `HANDLER_KEEPALIVE_TIMEOUT` 10s; the handler must permit pings
+  every 10s without calls (fetcher does) - convention in [handler-sidecar/README.md](../handler-sidecar/README.md).
+- grpc-java and grpc-go raise a keepalive time below 10s to 10s; the default of a server allows a client ping per
+  5 minutes and closes more eager clients with `too_many_pings`, so both ends are configured together.
+- Other connections: between Pekko nodes - the failure detector of the cluster (14b/14c); RabbitMQ - heartbeat of
+  the client (60s by default); S3 and the sites - timeouts of the HTTP clients.

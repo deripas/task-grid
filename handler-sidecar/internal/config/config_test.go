@@ -17,7 +17,8 @@ func TestDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.NodeAddress != "localhost:9090" || c.Sidecar.Capacity != 8 || c.Sidecar.WorkerID == "" ||
+	if c.Node.Address != "localhost:9090" || c.Node.KeepaliveTime != 10*time.Second || c.Node.KeepaliveTimeout != 5*time.Second ||
+		c.Handler.KeepaliveTime != 30*time.Second || c.Handler.KeepaliveTimeout != 10*time.Second || c.Sidecar.Capacity != 8 || c.Sidecar.WorkerID == "" ||
 		c.Sidecar.RetryInterval != time.Second || c.Sidecar.DrainTimeout != time.Minute ||
 		c.Handler.Target != "localhost:50051" || c.Handler.Timeout != 10*time.Minute ||
 		c.Handler.MaxResponse != 100<<20 || c.Sidecar.InlineMax != 512<<10 ||
@@ -42,13 +43,15 @@ func TestRequired(t *testing.T) {
 // above 4MiB would not be accepted by the node.
 func TestValuesValidated(t *testing.T) {
 	cases := map[string][]string{
-		"RETRY_INTERVAL":  {"0", "-1s", "soon"},
-		"DRAIN_TIMEOUT":   {"0s"},
-		"HANDLER_TIMEOUT": {"-1m"},
-		"CAPACITY":        {"0", "x"},
-		"MAX_RESPONSE":    {"0", "-1", "4MB"},
-		"INLINE_MAX":      {"5MiB", "x"},
-		"BLOB_S3_SECURE":  {"maybe"},
+		"RETRY_INTERVAL":            {"0", "-1s", "soon"},
+		"DRAIN_TIMEOUT":             {"0s"},
+		"HANDLER_TIMEOUT":           {"-1m"},
+		"NODE_KEEPALIVE_TIME":       {"0"},
+		"HANDLER_KEEPALIVE_TIMEOUT": {"-1s"},
+		"CAPACITY":                  {"0", "x"},
+		"MAX_RESPONSE":              {"0", "-1", "4MB"},
+		"INLINE_MAX":                {"5MiB", "x"},
+		"BLOB_S3_SECURE":            {"maybe"},
 	}
 	for name, values := range cases {
 		for _, v := range values {

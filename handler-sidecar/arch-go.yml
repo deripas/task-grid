@@ -2,7 +2,7 @@
 #
 #   cmd/handler-sidecar -> internal/app -> internal/node, internal/handler, internal/blob (adapters)
 #                                     \-> internal/sidecar (core: ports, lifecycle) -> internal/sidecar/credit -> -
-#                                     \-> internal/config -> Config of sidecar, handler and blob
+#                                     \-> internal/config -> Config of node, sidecar, handler and blob
 #   adapters -> ports of the core (only internal/node: Hello, Event, errors of the port) and internal/domain
 #   core -> internal/domain; the protocol (internal/gen) and libraries - only in the adapters
 #
@@ -46,6 +46,7 @@ dependenciesRules:
       internal:
         - "**.internal.sidecar"
         - "**.internal.handler"
+        - "**.internal.node"
         - "**.internal.blob"
     shouldNotDependsOn:
       external:

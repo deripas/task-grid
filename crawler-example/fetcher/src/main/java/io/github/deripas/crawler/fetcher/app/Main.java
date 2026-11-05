@@ -9,6 +9,7 @@ import io.grpc.Server;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -20,6 +21,12 @@ import java.util.concurrent.TimeUnit;
  */
 @Slf4j
 public final class Main {
+    /**
+     * The sidecar pings its connection to the handler every HANDLER_KEEPALIVE_TIME (30s, at least 10s): pings that
+     * often must be permitted, or the server closes the connection ({@code too_many_pings}, 5 minutes by default).
+     */
+    private static final Duration PERMIT_KEEPALIVE_TIME = Duration.ofSeconds(10);
+
     private Main() {
     }
 
@@ -29,6 +36,8 @@ public final class Main {
         final ExecutorService calls = Executors.newVirtualThreadPerTaskExecutor();
         final Server server = Grpc.newServerBuilderForPort(settings.port(), InsecureServerCredentials.create())
             .executor(calls)
+            .permitKeepAliveTime(PERMIT_KEEPALIVE_TIME.toNanos(), TimeUnit.NANOSECONDS)
+            .permitKeepAliveWithoutCalls(true)
             .addService(new FetcherService(fetcher))
             .build()
             .start();

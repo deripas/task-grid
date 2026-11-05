@@ -76,7 +76,9 @@ public class UrlManagerConfiguration {
 
     @Bean
     NodeServer nodeServer(UrlManagerProperties properties, Node node) {
-        return new NodeServer(properties.grpcPort(), new NodeService(node.remote()), properties.shutdownTimeout());
+        final UrlManagerProperties.GrpcKeepalive keepalive = properties.grpcKeepalive();
+        return new NodeServer(properties.grpcPort(), new NodeService(node.remote()),
+            new NodeServer.Keepalive(keepalive.time(), keepalive.timeout(), keepalive.permitTime()), properties.shutdownTimeout());
     }
 
     @Bean

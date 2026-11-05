@@ -13,15 +13,16 @@ import (
 
 	"github.com/deripas/task-grid/handler-sidecar/internal/blob"
 	"github.com/deripas/task-grid/handler-sidecar/internal/handler"
+	"github.com/deripas/task-grid/handler-sidecar/internal/node"
 	"github.com/deripas/task-grid/handler-sidecar/internal/sidecar"
 )
 
 // Config - settings of the sidecar from the environment.
 type Config struct {
-	NodeAddress string // host:port of the task-grid node
-	Sidecar     sidecar.Config
-	Handler     handler.Config
-	Blob        blob.Config // Endpoint empty - no blob storage
+	Node    node.Config
+	Sidecar sidecar.Config
+	Handler handler.Config
+	Blob    blob.Config // Endpoint empty - no blob storage
 }
 
 // maxInline - default limit of an inbound message of the Java gRPC server: a larger inline result would not be
@@ -32,7 +33,7 @@ const maxInline = 4 << 20
 func Load() (Config, error) {
 	host, _ := os.Hostname()
 	c := Config{
-		NodeAddress: env("NODE_ADDRESS", "localhost:9090"),
+		Node: node.Config{Address: env("NODE_ADDRESS", "localhost:9090")},
 		Sidecar: sidecar.Config{
 			WorkerID: env("WORKER_ID", host),
 			Kind:     env("KIND", ""),
@@ -70,6 +71,10 @@ func Load() (Config, error) {
 		{"HANDLER_TIMEOUT", "10m", &c.Handler.Timeout},
 		{"RETRY_INTERVAL", "1s", &c.Sidecar.RetryInterval},
 		{"DRAIN_TIMEOUT", "60s", &c.Sidecar.DrainTimeout},
+		{"NODE_KEEPALIVE_TIME", "10s", &c.Node.KeepaliveTime},
+		{"NODE_KEEPALIVE_TIMEOUT", "5s", &c.Node.KeepaliveTimeout},
+		{"HANDLER_KEEPALIVE_TIME", "30s", &c.Handler.KeepaliveTime},
+		{"HANDLER_KEEPALIVE_TIMEOUT", "10s", &c.Handler.KeepaliveTimeout},
 	} {
 		if *d.to, err = time.ParseDuration(env(d.name, d.def)); err != nil {
 			return c, fmt.Errorf("%s: %w", d.name, err)

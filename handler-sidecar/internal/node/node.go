@@ -6,10 +6,12 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 
 	"github.com/deripas/task-grid/handler-sidecar/internal/domain"
@@ -17,15 +19,31 @@ import (
 	"github.com/deripas/task-grid/handler-sidecar/internal/sidecar"
 )
 
+// Config - the node and the check of the connection to it.
+type Config struct {
+	Address string // host:port of the task-grid node
+	// HTTP/2 pings, also without calls: a connection without an answer to a ping within KeepaliveTimeout is closed,
+	// the session breaks and the sidecar reconnects. gRPC raises KeepaliveTime below 10s to 10s; the node must
+	// permit pings that often.
+	KeepaliveTime    time.Duration
+	KeepaliveTimeout time.Duration
+}
+
 // Client - connection to one node.
 type Client struct {
 	conn *grpc.ClientConn
 	stub remotev1.NodeClient
 }
 
-// New creates a client of the node at target (host:port); the connection is established lazily.
-func New(target string) (*Client, error) {
-	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()))
+// New creates a client of the node; the connection is established lazily.
+func New(cfg Config) (*Client, error) {
+	conn, err := grpc.NewClient(cfg.Address,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                cfg.KeepaliveTime,
+			Timeout:             cfg.KeepaliveTimeout,
+			PermitWithoutStream: true,
+		}))
 	if err != nil {
 		return nil, err
 	}

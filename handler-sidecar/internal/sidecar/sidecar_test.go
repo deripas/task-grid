@@ -18,8 +18,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	remotev1 "github.com/deripas/task-grid/handler-sidecar/internal/gen/remote/v1"
 	"github.com/deripas/task-grid/handler-sidecar/internal/domain"
+	remotev1 "github.com/deripas/task-grid/handler-sidecar/internal/gen/remote/v1"
 	"github.com/deripas/task-grid/handler-sidecar/internal/handler"
 	"github.com/deripas/task-grid/handler-sidecar/internal/handler/handlertest"
 	"github.com/deripas/task-grid/handler-sidecar/internal/node"
@@ -239,7 +239,7 @@ func startWith(
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { hc.Close() })
-	nc, err := node.New(n.addr)
+	nc, err := node.New(node.Config{Address: n.addr, KeepaliveTime: time.Minute, KeepaliveTimeout: 10 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}

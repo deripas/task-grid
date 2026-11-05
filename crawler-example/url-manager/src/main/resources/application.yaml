@@ -29,6 +29,11 @@ management:
 
 url-manager:
   grpc-port: 9090
+  # sidecars ping every 10s (NODE_KEEPALIVE_TIME): permit-time must not be above it
+  grpc-keepalive:
+    time: 30s
+    timeout: 10s
+    permit-time: 5s
   default-timeout: 60s
   max-timeout: 10m
   max-attempts: 3

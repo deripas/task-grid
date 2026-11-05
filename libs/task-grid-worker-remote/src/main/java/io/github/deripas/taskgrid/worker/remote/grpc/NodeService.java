@@ -142,7 +142,7 @@ public final class NodeService extends NodeGrpc.NodeImplBase {
 
         void cancelled() {
             if (session != null) {
-                session.closed("cancelled by sidecar");
+                session.closed("stream cancelled: the sidecar is gone or the connection is lost (keepalive)");
             }
         }
 

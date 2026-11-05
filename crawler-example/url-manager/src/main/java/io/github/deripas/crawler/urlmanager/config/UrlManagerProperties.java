@@ -8,6 +8,7 @@ import java.time.Duration;
  * Settings {@code url-manager.*}; defaults - {@code application.yaml}.
  *
  * @param grpcPort        port of the node for sidecars; 0 - any free one
+ * @param grpcKeepalive   HTTP/2 pings of the connections of sidecars
  * @param defaultTimeout  wait for a page when the client gives none
  * @param maxTimeout      upper bound of the timeout of a client
  * @param maxAttempts     attempts per fetch, including the first one
@@ -19,6 +20,7 @@ import java.time.Duration;
 @ConfigurationProperties("url-manager")
 public record UrlManagerProperties(
     int grpcPort,
+    GrpcKeepalive grpcKeepalive,
     Duration defaultTimeout,
     Duration maxTimeout,
     int maxAttempts,
@@ -28,6 +30,20 @@ public record UrlManagerProperties(
     Blob blob,
     Rabbit rabbit
 ) {
+    /**
+     * HTTP/2 pings of the connections of sidecars: a hung connection (open, nothing passes) is closed.
+     *
+     * @param time       ping a connection quiet this long; gRPC raises it to 10s at least
+     * @param timeout    no answer to a ping this long - the connection is closed, its session ends
+     * @param permitTime sidecars may ping this often; at most their {@code NODE_KEEPALIVE_TIME}
+     */
+    public record GrpcKeepalive(
+        Duration time,
+        Duration timeout,
+        Duration permitTime
+    ) {
+    }
+
     /**
      * S3 storage of large results, the one the sidecars of the fetcher write to.
      *
