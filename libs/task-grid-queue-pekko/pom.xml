@@ -30,10 +30,10 @@
             <groupId>org.apache.pekko</groupId>
             <artifactId>pekko-persistence-typed_${scala.binary.version}</artifactId>
         </dependency>
-        <!-- commands and events between nodes and in the journal: CBOR -->
+        <!-- commands and events between nodes and in the journal: CBOR, with the types of the core -->
         <dependency>
-            <groupId>org.apache.pekko</groupId>
-            <artifactId>pekko-serialization-jackson_${scala.binary.version}</artifactId>
+            <groupId>io.github.deripas</groupId>
+            <artifactId>task-grid-pekko-core</artifactId>
         </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>

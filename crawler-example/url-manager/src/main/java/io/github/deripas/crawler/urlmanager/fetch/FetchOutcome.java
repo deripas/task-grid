@@ -21,4 +21,11 @@ public sealed interface FetchOutcome {
      */
     record TimedOut() implements FetchOutcome {
     }
+
+    /**
+     * Not submitted: the client has as many requests in work on this node as its box allows (until their results
+     * are taken, also of those timed out).
+     */
+    record Busy() implements FetchOutcome {
+    }
 }

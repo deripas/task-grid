@@ -3,10 +3,11 @@ package io.github.deripas.taskgrid.queue.memory;
 import io.github.deripas.taskgrid.queue.DelayPolicy;
 import io.github.deripas.taskgrid.queue.QueueSettings;
 import io.github.deripas.taskgrid.queue.TaskQueue;
-import io.github.deripas.taskgrid.result.memory.MemoryResultStore;
 import io.github.deripas.taskgrid.task.Attempt;
 import io.github.deripas.taskgrid.task.AttemptResult;
 import io.github.deripas.taskgrid.task.Blob;
+import io.github.deripas.taskgrid.task.Request;
+import io.github.deripas.taskgrid.task.RequestId;
 import io.github.deripas.taskgrid.task.Task;
 import io.github.deripas.taskgrid.task.TaskResult;
 import io.github.deripas.taskgrid.task.TaskStatus;
@@ -16,7 +17,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
-import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -37,8 +37,7 @@ class MemoryTaskQueueTest {
     private static final Duration PAUSE = Duration.ofMillis(200);
 
     private final List<Attempt> assigned = new CopyOnWriteArrayList<>();
-    private final MemoryResultStore results = new MemoryResultStore(Duration.ofMinutes(1), Clock.systemUTC());
-    private final MemoryTaskQueue queue = new MemoryTaskQueue(new QueueSettings(3, Duration.ofMinutes(1)), DelayPolicy.NONE, results);
+    private final MemoryTaskQueue queue = new MemoryTaskQueue(new QueueSettings(3, Duration.ofMinutes(1)), DelayPolicy.NONE);
 
     @BeforeEach
     void subscribe() {
@@ -77,14 +76,30 @@ class MemoryTaskQueueTest {
     }
 
     @Test
+    void requestsOfTheSameTaskAreDoneOnceAndAllGetTheResult() {
+        final List<List<Request>> finished = new ArrayList<>();
+        queue.onResult((result, requests) -> {
+            finished.add(requests);
+            return CompletableFuture.completedFuture(null);
+        });
+        final Task task = Task.of(Blob.of("payload".getBytes(StandardCharsets.UTF_8)), Map.of());
+        submit(task, request("r1"));
+        submit(task, request("r2"));
+        assertEquals(1, assigned.size());
+
+        queue.complete(AttemptResult.done(assigned.getFirst(), Blob.of(new byte[0])));
+        assertEquals(List.of(List.of(request("r1"), request("r2"))), finished);
+    }
+
+    @Test
     void finalResultGoesToTheCallbacks() {
         final List<TaskResult> first = new ArrayList<>();
         final List<TaskResult> second = new ArrayList<>();
-        queue.onResult(result -> {
+        queue.onResult((result, requests) -> {
             first.add(result);
             return CompletableFuture.completedFuture(null);
         });
-        queue.onResult(result -> {
+        queue.onResult((result, requests) -> {
             second.add(result);
             throw new IllegalStateException("a failing callback does not stop the others");
         });
@@ -98,7 +113,6 @@ class MemoryTaskQueueTest {
         assertEquals(TaskStatus.DONE, first.getFirst().status());
         assertEquals("2", first.getFirst().meta().get(TaskQueue.ATTEMPTS));
         assertEquals(first, second);
-        assertTrue(results.await("t", Duration.ZERO).toCompletableFuture().join().isPresent());
     }
 
     /**
@@ -119,16 +133,16 @@ class MemoryTaskQueueTest {
      */
     @Test
     void nextTaskOfAKeyWaitsForThePauseWhileOtherKeysDoNot() throws InterruptedException {
-        try (MemoryTaskQueue paused = new MemoryTaskQueue(new QueueSettings(3, Duration.ofMinutes(1)), DelayPolicy.fixed(PAUSE), results)) {
+        try (MemoryTaskQueue paused = new MemoryTaskQueue(new QueueSettings(3, Duration.ofMinutes(1)), DelayPolicy.fixed(PAUSE))) {
             final BlockingQueue<Attempt> ready = new LinkedBlockingQueue<>();
             paused.onReady(ready::add);
-            paused.submit(new Task("a1", Blob.of(new byte[0]), Map.of(TaskQueue.PARTITION_KEY, "a.com")));
-            paused.submit(new Task("a2", Blob.of(new byte[0]), Map.of(TaskQueue.PARTITION_KEY, "a.com")));
+            paused.submit(new Task("a1", Blob.of(new byte[0]), Map.of(TaskQueue.PARTITION_KEY, "a.com")), request("a1"));
+            paused.submit(new Task("a2", Blob.of(new byte[0]), Map.of(TaskQueue.PARTITION_KEY, "a.com")), request("a2"));
             paused.complete(AttemptResult.done(ready.take(), Blob.of(new byte[0])));
             final long finished = System.nanoTime();
 
-            paused.submit(new Task("b1", Blob.of(new byte[0]), Map.of(TaskQueue.PARTITION_KEY, "b.com")));
-            paused.submit(new Task("n1", Blob.of(new byte[0]), Map.of()));
+            paused.submit(new Task("b1", Blob.of(new byte[0]), Map.of(TaskQueue.PARTITION_KEY, "b.com")), request("b1"));
+            paused.submit(new Task("n1", Blob.of(new byte[0]), Map.of()), request("n1"));
             assertEquals(List.of("b1", "n1"), List.of(ready.take().task().id(), ready.take().task().id()));
 
             final Attempt next = ready.poll(5, TimeUnit.SECONDS);
@@ -143,10 +157,10 @@ class MemoryTaskQueueTest {
      */
     @Test
     void attemptWithoutAResultIsHandedOutAgainAfterTheTimeout() throws InterruptedException {
-        try (MemoryTaskQueue timed = new MemoryTaskQueue(new QueueSettings(3, Duration.ofMillis(200)), DelayPolicy.NONE, results)) {
+        try (MemoryTaskQueue timed = new MemoryTaskQueue(new QueueSettings(3, Duration.ofMillis(200)), DelayPolicy.NONE)) {
             final BlockingQueue<Attempt> ready = new LinkedBlockingQueue<>();
             timed.onReady(ready::add);
-            timed.submit(task("t", "payload"));
+            timed.submit(task("t", "payload"), request("t"));
 
             assertEquals(1, ready.take().number());
             final Attempt second = ready.poll(5, TimeUnit.SECONDS);
@@ -155,7 +169,15 @@ class MemoryTaskQueueTest {
     }
 
     private void submit(Task task) {
-        queue.submit(task).toCompletableFuture().join();
+        submit(task, request(task.id()));
+    }
+
+    private void submit(Task task, Request request) {
+        queue.submit(task, request).toCompletableFuture().join();
+    }
+
+    private static Request request(String id) {
+        return Request.of(new RequestId("client", "0", id));
     }
 
     private static Task task(String id, String payload) {

@@ -17,16 +17,18 @@ import static com.tngtech.archunit.library.dependencies.SlicesRuleDefinition.sli
  *            cluster: PekkoCluster), adapters; nobody sees it
  *     ↓
  *   api      FetchController - inbound adapter: HTTP (Spring MVC) &lt;-&gt; fetch
- *   amqp     FetchMessages, RabbitFetchListener - inbound adapter: RabbitMQ (Spring AMQP), url_manager.proto (v1,
- *            from url-manager-api) &lt;-&gt; fetch; acknowledgement after the reply
- *   grpc     NodeServer - inbound adapter: gRPC server of the node for sidecars (NodeService of task-grid)
+ *   amqp     RabbitRequests - the RabbitMQ gateway of task-grid (AmqpGateway) in the lifecycle of the application
+ *   grpc     NodeServer - gRPC server of the node: sidecars (NodeService), clients (GatewayService of task-grid)
  *   metrics  PoolMetrics - outbound adapter: load of the remote worker by kind -&gt; Micrometer (autoscaling)
  *   fetcher  ProtoPageCodec - outbound adapter: fetcher.proto (from fetcher-api) implements the port PageCodec
  *   blob     S3BlobReader - outbound adapter: S3 (AWS SDK) and zstd implement the port BlobReader
  *   config   UrlManagerProperties - settings, data only
  *     ↓
+ *   protocol FetchTaskCodec, Replies - url_manager.proto (v1) as the payloads and replies of the gateways of task-grid
+ *            (gRPC, RabbitMQ) &lt;-&gt; fetch
+ *     ↓
  *   fetch    FetchService, PageUrl, Page, FetchOutcome, ports PageCodec and BlobReader - domain and use case on the
- *            API of task-grid (task, queue, result, worker), not on its implementations
+ *            API of task-grid (task, queue, gateway, worker), not on its implementations
  * </pre>
  * The adapters do not know each other. A rule gets in the way - change it here explicitly, with a reason next to it.
  */
@@ -42,6 +44,7 @@ class ArchitectureTest {
         .layer("app").definedBy(BASE + ".app..")
         .layer("api").definedBy(BASE + ".api..")
         .layer("amqp").definedBy(BASE + ".amqp..")
+        .layer("protocol").definedBy(BASE + ".protocol..")
         .layer("v1").definedBy(BASE + ".v1..")
         .layer("grpc").definedBy(BASE + ".grpc..")
         .layer("metrics").definedBy(BASE + ".metrics..")
@@ -52,13 +55,14 @@ class ArchitectureTest {
         .whereLayer("app").mayNotBeAccessedByAnyLayer()
         .whereLayer("api").mayOnlyBeAccessedByLayers("app")
         .whereLayer("amqp").mayOnlyBeAccessedByLayers("app")
-        .whereLayer("v1").mayOnlyBeAccessedByLayers("amqp")
+        .whereLayer("protocol").mayOnlyBeAccessedByLayers("app")
+        .whereLayer("v1").mayOnlyBeAccessedByLayers("protocol")
         .whereLayer("grpc").mayOnlyBeAccessedByLayers("app")
         .whereLayer("metrics").mayOnlyBeAccessedByLayers("app")
         .whereLayer("fetcher").mayOnlyBeAccessedByLayers("app")
         .whereLayer("blob").mayOnlyBeAccessedByLayers("app")
         .whereLayer("config").mayOnlyBeAccessedByLayers("app")
-        .whereLayer("fetch").mayOnlyBeAccessedByLayers("app", "api", "amqp", "fetcher", "blob");
+        .whereLayer("fetch").mayOnlyBeAccessedByLayers("app", "api", "protocol", "fetcher", "blob");
 
     /**
      * Domain and use case: JDK, lombok, slf4j and the API of task-grid; neither protocols nor frameworks nor storage.
@@ -67,20 +71,21 @@ class ArchitectureTest {
     static final ArchRule FETCH_DEPENDENCIES = classes().that().resideInAPackage(BASE + ".fetch..")
         .should().onlyDependOnClassesThat().resideInAnyPackage(
             "java..", "lombok..", "org.slf4j..",
-            TASK_GRID + ".task..", TASK_GRID + ".queue", TASK_GRID + ".result", TASK_GRID + ".worker",
+            TASK_GRID + ".task..", TASK_GRID + ".queue", TASK_GRID + ".gateway", TASK_GRID + ".worker",
             BASE + ".fetch..");
 
     /**
-     * Implementations of task-grid (memory, remote) and their wiring (dispatch) are chosen by the assembly; the gRPC
-     * server only hosts NodeService; metrics read the load of the remote worker - it is the remote worker that knows
+     * Implementations of task-grid (memory, remote, the gRPC gateway) and their wiring (dispatch) are chosen by the
+     * assembly; the gRPC server only hosts the services; metrics read the load of the remote worker - it is the remote worker that knows
      * its waiting attempts and slots.
      */
     @ArchTest
     static final ArchRule TASK_GRID_IMPLEMENTATIONS_ONLY_IN_APP_AND_GRPC = noClasses()
-        .that().resideOutsideOfPackages(BASE + ".app..", BASE + ".grpc..", BASE + ".metrics..")
+        .that().resideOutsideOfPackages(BASE + ".app..", BASE + ".grpc..", BASE + ".amqp..", BASE + ".metrics..")
         .should().dependOnClassesThat().resideInAnyPackage(
-            TASK_GRID + ".queue.memory..", TASK_GRID + ".result.memory..", TASK_GRID + ".worker.remote..", TASK_GRID + ".worker.local..",
-            TASK_GRID + ".dispatch..", TASK_GRID + ".queue.pekko..");
+            TASK_GRID + ".queue.memory..", TASK_GRID + ".mailbox.memory..", TASK_GRID + ".worker.remote..", TASK_GRID + ".worker.local..",
+            TASK_GRID + ".dispatch..", TASK_GRID + ".queue.pekko..", TASK_GRID + ".mailbox.pekko..", TASK_GRID + ".gateway.grpc..",
+            TASK_GRID + ".gateway.amqp..");
 
     /**
      * The cluster is a matter of the assembly: the use case and the adapters see only the TaskQueue port.
@@ -100,9 +105,12 @@ class ArchitectureTest {
         .that().resideOutsideOfPackage(BASE + ".fetcher..")
         .should().dependOnClassesThat().resideInAnyPackage("io.github.deripas.crawler.fetcher..");
 
+    /**
+     * app: the assembly hands the services of the node ({@code BindableService}) to its server.
+     */
     @ArchTest
     static final ArchRule GRPC_ONLY_IN_FETCHER_AND_GRPC = noClasses()
-        .that().resideOutsideOfPackages(BASE + ".fetcher..", BASE + ".grpc..")
+        .that().resideOutsideOfPackages(BASE + ".fetcher..", BASE + ".grpc..", BASE + ".app..")
         .should().dependOnClassesThat().resideInAnyPackage("io.grpc..");
 
     /**
@@ -110,7 +118,7 @@ class ArchitectureTest {
      */
     @ArchTest
     static final ArchRule PROTOBUF_ONLY_IN_PROTOCOL_ADAPTERS = noClasses()
-        .that().resideOutsideOfPackages(BASE + ".fetcher..", BASE + ".grpc..", BASE + ".amqp..", BASE + ".v1..")
+        .that().resideOutsideOfPackages(BASE + ".fetcher..", BASE + ".grpc..", BASE + ".protocol..", BASE + ".v1..")
         .should().dependOnClassesThat().resideInAnyPackage("com.google.protobuf..");
 
     @ArchTest

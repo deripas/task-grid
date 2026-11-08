@@ -1,0 +1,60 @@
+// Clients <-> task-grid node: submit requests, take their results.
+//
+// A request is addressed by client (an integration), consumer (an instance of it, stable across its restarts, e.g.
+// the ordinal of a pod) and id (given by the client, the key of idempotency). The results of the requests of a
+// consumer wait in its box on the cluster until acknowledged, whichever node the request came to or the task
+// finished on: any node serves any box.
+//
+// - Submit: OK once the request is in the queue. Retry with the same id on any error: the same request is not queued
+//   twice, a request whose result waits is not queued again. The same payload of several requests (also of other
+//   clients) while its task is queued is done once, each request gets the result.
+//   RESOURCE_EXHAUSTED - the box has as many requests not acknowledged as its limit allows: take results first.
+//   INVALID_ARGUMENT - the payload is refused by the application, or the id is in the queue with another payload.
+// - Subscribe: the results of the box not acknowledged yet, then the new ones, as the stream can take them. One
+//   subscription per box: a newer one ends the older one with ABORTED.
+// - Ack: removes the results from the box and frees their places. A result not acknowledged comes again with the
+//   next subscription: delivery is at least once, a consumer handles a repeated result.
+//
+// Payloads and results are bytes: their types are known to the client and the application of the node.
+syntax = "proto3";
+
+package taskgrid.gateway.v1;
+
+option java_multiple_files = true;
+option java_package = "io.github.deripas.taskgrid.gateway.grpc.v1";
+
+service TaskGateway {
+  rpc Submit(SubmitRequest) returns (SubmitReply);
+  rpc Subscribe(SubscribeRequest) returns (stream Result);
+  rpc Ack(stream AckRequest) returns (AckReply);
+}
+
+message SubmitRequest {
+  string client = 1;
+  string consumer = 2;
+  string id = 3;
+  bytes payload = 4;
+}
+
+message SubmitReply {
+}
+
+message SubscribeRequest {
+  string client = 1;
+  string consumer = 2;
+}
+
+// The result of a request: its id and the reply of the application.
+message Result {
+  string id = 1;
+  bytes payload = 2;
+}
+
+message AckRequest {
+  string client = 1;
+  string consumer = 2;
+  repeated string ids = 3;
+}
+
+message AckReply {
+}

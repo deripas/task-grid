@@ -5,10 +5,10 @@ import io.github.deripas.taskgrid.queue.DelayPolicy;
 import io.github.deripas.taskgrid.queue.QueueSettings;
 import io.github.deripas.taskgrid.queue.TaskQueue;
 import io.github.deripas.taskgrid.queue.memory.MemoryTaskQueue;
-import io.github.deripas.taskgrid.result.ResultStore;
-import io.github.deripas.taskgrid.result.memory.MemoryResultStore;
 import io.github.deripas.taskgrid.task.Attempt;
 import io.github.deripas.taskgrid.task.Blob;
+import io.github.deripas.taskgrid.task.Request;
+import io.github.deripas.taskgrid.task.RequestId;
 import io.github.deripas.taskgrid.task.Task;
 import io.github.deripas.taskgrid.task.TaskResult;
 import io.github.deripas.taskgrid.task.TaskStatus;
@@ -21,30 +21,31 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
-import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * The whole flow in one JVM from in-memory implementations: queue, dispatcher, in-process worker, result store, handlers.
+ * The whole flow in one JVM from in-memory implementations: queue, dispatcher, in-process worker, handlers.
  */
 class LocalNodeTest {
     private static final Duration WAIT = Duration.ofSeconds(10);
 
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
-    private final ResultStore results = new MemoryResultStore(Duration.ofMinutes(1), Clock.systemUTC());
+    private final Map<String, CompletableFuture<TaskResult>> results = new ConcurrentHashMap<>();
     private final Map<String, AtomicInteger> runningByKey = new ConcurrentHashMap<>();
     private final Map<String, Queue<String>> orderByKey = new ConcurrentHashMap<>();
     private final AtomicInteger running = new AtomicInteger();
@@ -55,15 +56,19 @@ class LocalNodeTest {
     private final Map<String, Handler> handlers = Map.of(
         "echo", this::echo,
         "flaky", attempt -> {
-            if (flakyCalls.computeIfAbsent(attempt.task().id(), id -> new AtomicInteger()).incrementAndGet() < 3) {
+            if (flakyCalls.computeIfAbsent(name(attempt), id -> new AtomicInteger()).incrementAndGet() < 3) {
                 throw new RetryableException("connection reset");
             }
             return attempt.task().payload();
         });
-    private final MemoryTaskQueue queue = new MemoryTaskQueue(new QueueSettings(3, Duration.ofMinutes(1)), DelayPolicy.NONE, results);
+    private final MemoryTaskQueue queue = new MemoryTaskQueue(new QueueSettings(3, Duration.ofMinutes(1)), DelayPolicy.NONE);
 
     @BeforeEach
     void connect() {
+        queue.onResult((result, requests) -> {
+            requests.forEach(request -> result(request.id().id()).complete(result));
+            return CompletableFuture.completedFuture(null);
+        });
         Dispatcher.connect(queue, new LocalWorker(handlers, executor));
     }
 
@@ -126,11 +131,11 @@ class LocalNodeTest {
     }
 
     private Blob echo(Attempt attempt) throws InterruptedException {
-        final String key = attempt.task().meta().getOrDefault(TaskQueue.PARTITION_KEY, attempt.task().id());
+        final String key = attempt.task().meta().getOrDefault(TaskQueue.PARTITION_KEY, name(attempt));
         final AtomicInteger perKey = runningByKey.computeIfAbsent(key, k -> new AtomicInteger());
         maxRunningPerKey.accumulateAndGet(perKey.incrementAndGet(), Math::max);
         maxRunning.accumulateAndGet(running.incrementAndGet(), Math::max);
-        orderByKey.computeIfAbsent(key, k -> new ConcurrentLinkedQueue<>()).add(attempt.task().id());
+        orderByKey.computeIfAbsent(key, k -> new ConcurrentLinkedQueue<>()).add(name(attempt));
         try {
             Thread.sleep(5);
             return attempt.task().payload();
@@ -140,11 +145,23 @@ class LocalNodeTest {
         }
     }
 
+    /**
+     * The id of the request a task was submitted with is its payload (the id of the task is the hash of it).
+     */
+    private static String name(Attempt attempt) {
+        return new String(((Blob.Inline) attempt.task().payload()).bytes(), StandardCharsets.UTF_8);
+    }
+
     private void submit(String id, Map<String, String> meta) {
-        queue.submit(new Task(id, Blob.of(id.getBytes(StandardCharsets.UTF_8)), meta)).toCompletableFuture().join();
+        final Request request = Request.of(new RequestId("test", "0", id));
+        queue.submit(Task.of(Blob.of(id.getBytes(StandardCharsets.UTF_8)), meta), request).toCompletableFuture().join();
     }
 
     private TaskResult await(String id) {
-        return results.await(id, WAIT).toCompletableFuture().join().orElseThrow();
+        return result(id).orTimeout(WAIT.toMillis(), TimeUnit.MILLISECONDS).join();
+    }
+
+    private CompletableFuture<TaskResult> result(String requestId) {
+        return results.computeIfAbsent(requestId, id -> new CompletableFuture<>());
     }
 }

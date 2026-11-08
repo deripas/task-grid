@@ -6,9 +6,9 @@ import io.github.deripas.taskgrid.queue.DelayPolicy;
 import io.github.deripas.taskgrid.queue.QueueSettings;
 import io.github.deripas.taskgrid.queue.TaskQueue;
 import io.github.deripas.taskgrid.queue.memory.MemoryTaskQueue;
-import io.github.deripas.taskgrid.result.ResultStore;
-import io.github.deripas.taskgrid.result.memory.MemoryResultStore;
 import io.github.deripas.taskgrid.task.Blob;
+import io.github.deripas.taskgrid.task.Request;
+import io.github.deripas.taskgrid.task.RequestId;
 import io.github.deripas.taskgrid.task.Task;
 import io.github.deripas.taskgrid.task.TaskResult;
 import io.github.deripas.taskgrid.task.TaskStatus;
@@ -42,6 +42,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -65,7 +66,7 @@ class SidecarCompatibilityIT {
     private static Network network;
     private static GenericContainer<?> storage;
 
-    private final ResultStore results = new MemoryResultStore(Duration.ofMinutes(1), Clock.systemUTC());
+    private final Map<String, CompletableFuture<TaskResult>> results = new ConcurrentHashMap<>();
     private RemoteWorker worker;
     private MemoryTaskQueue queue;
     private Server node;
@@ -93,7 +94,11 @@ class SidecarCompatibilityIT {
 
     @BeforeEach
     void start() throws IOException {
-        queue = new MemoryTaskQueue(new QueueSettings(3, Duration.ofMinutes(1)), DelayPolicy.NONE, results);
+        queue = new MemoryTaskQueue(new QueueSettings(3, Duration.ofMinutes(1)), DelayPolicy.NONE);
+        queue.onResult((result, requests) -> {
+            requests.forEach(request -> result(request.id().id()).complete(result));
+            return CompletableFuture.completedFuture(null);
+        });
         worker = new RemoteWorker(RemoteSettings.DEFAULTS, Clock.systemUTC());
         Dispatcher.connect(queue, worker);
         node = Grpc.newServerBuilderForPort(0, InsecureServerCredentials.create())
@@ -216,7 +221,9 @@ class SidecarCompatibilityIT {
         String command,
         Map<String, String> meta
     ) {
-        queue.submit(new Task(id, Blob.of(command.getBytes(StandardCharsets.UTF_8)), meta)).toCompletableFuture().join();
+        // the task id is given: tasks with the same payload stay apart
+        final Task task = new Task(id, Blob.of(command.getBytes(StandardCharsets.UTF_8)), meta);
+        queue.submit(task, Request.of(new RequestId("test", "0", id))).toCompletableFuture().join();
     }
 
     /**
@@ -263,6 +270,10 @@ class SidecarCompatibilityIT {
     }
 
     private TaskResult await(String id) {
-        return results.await(id, WAIT).toCompletableFuture().join().orElseThrow(() -> new AssertionError("no result for " + id));
+        return result(id).orTimeout(WAIT.toMillis(), TimeUnit.MILLISECONDS).join();
+    }
+
+    private CompletableFuture<TaskResult> result(String requestId) {
+        return results.computeIfAbsent(requestId, id -> new CompletableFuture<>());
     }
 }

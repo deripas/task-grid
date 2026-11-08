@@ -6,8 +6,8 @@ import io.github.deripas.taskgrid.queue.QueueSettings;
 import io.github.deripas.taskgrid.queue.ReadyCallback;
 import io.github.deripas.taskgrid.queue.ResultCallback;
 import io.github.deripas.taskgrid.queue.TaskQueue;
-import io.github.deripas.taskgrid.result.ResultStore;
 import io.github.deripas.taskgrid.task.AttemptResult;
+import io.github.deripas.taskgrid.task.Request;
 import io.github.deripas.taskgrid.task.Task;
 import lombok.AccessLevel;
 import lombok.RequiredArgsConstructor;
@@ -31,9 +31,10 @@ import java.util.concurrent.CompletionStage;
  *   <li>Ready attempts go to the {@link ReadyCallback}s of the node where their partition lives; connect them to
  *   a worker of that node ({@code Dispatcher}).</li>
  *   <li>{@link #complete} may be called on any node: the partition is found by the partition key in the meta of the
- *   result; it completes once the result is in the journal, so the worker may forget it only then.</li>
- *   <li>Final results go to the result store and the {@link ResultCallback}s of the node of the partition, again
- *   until all of them succeed (at least once), also after a restart.</li>
+ *   result; it completes once the result is taken - a final one delivered and the end of its task in the journal -,
+ *   so the worker may forget it only then; it fails if the delivery failed, and the worker repeats it.</li>
+ *   <li>Final results go to the {@link ResultCallback}s of the node of the partition before the end of the task is
+ *   persisted: at least once, the journal keeps no results.</li>
  * </ul>
  * The cluster, the journal and snapshot plugins and the serialization of the application are configured by the
  * application; settings of this library - {@code task-grid.queue.pekko} (reference.conf). Partitions are remembered
@@ -52,13 +53,13 @@ public final class PekkoTaskQueue implements TaskQueue {
     public static PekkoTaskQueue start(
         ActorSystem<?> system,
         QueueSettings settings,
-        DelayPolicy delay,
-        ResultStore results
+        DelayPolicy delay
     ) {
         final Config config = system.settings().config().getConfig("task-grid.queue.pekko");
-        final Receivers receivers = new Receivers(results);
+        final Receivers receivers = new Receivers();
         final PartitionEntity.Settings entity = new PartitionEntity.Settings(settings, delay,
-            config.getDuration("redeliver-after"), config.getInt("snapshot-every"), config.getDuration("idle-timeout"));
+            config.getDuration("redeliver-after"), config.getDuration("delivery-timeout"), config.getInt("snapshot-every"),
+            config.getDuration("idle-timeout"));
         final ClusterSharding sharding = ClusterSharding.get(system);
         sharding.init(Entity.of(PartitionEntity.TYPE_KEY, context ->
                 PartitionEntity.create(context.getEntityId(), context.getShard(), entity, receivers))
@@ -70,12 +71,13 @@ public final class PekkoTaskQueue implements TaskQueue {
     }
 
     /**
-     * An id still in its partition with another payload fails with {@link IllegalArgumentException}.
+     * An id of a task still in its partition with another payload, a request there with another task fail with
+     * {@link IllegalArgumentException}.
      */
     @Override
-    public CompletionStage<Void> submit(Task task) {
+    public CompletionStage<Void> submit(Task task, Request request) {
         return sharding.entityRefFor(PartitionEntity.TYPE_KEY, PartitionEntity.entityId(task.id(), task.meta()))
-            .<Done>askWithStatus(replyTo -> new PartitionEntity.Submit(task, replyTo), askTimeout)
+            .<Done>askWithStatus(replyTo -> new PartitionEntity.Submit(task, request, replyTo), askTimeout)
             .handle((done, error) -> {
                 if (error == null) {
                     return CompletableFuture.<Void>completedFuture(null);
@@ -93,7 +95,7 @@ public final class PekkoTaskQueue implements TaskQueue {
     @Override
     public CompletionStage<Void> complete(AttemptResult result) {
         return sharding.entityRefFor(PartitionEntity.TYPE_KEY, PartitionEntity.entityId(result.taskId(), result.meta()))
-            .<Done>ask(replyTo -> new PartitionEntity.Complete(result, replyTo), askTimeout)
+            .<Done>askWithStatus(replyTo -> new PartitionEntity.Complete(result, replyTo), askTimeout)
             .thenApply(done -> null);
     }
 

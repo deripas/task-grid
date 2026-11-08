@@ -1,19 +1,22 @@
 package io.github.deripas.crawler.urlmanager.grpc;
 
-import io.github.deripas.taskgrid.worker.remote.grpc.NodeService;
+import io.grpc.BindableService;
 import io.grpc.Grpc;
 import io.grpc.InsecureServerCredentials;
 import io.grpc.Server;
+import io.grpc.ServerBuilder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.SmartLifecycle;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
- * gRPC server of the task-grid node: sidecars connect to it ({@code taskgrid.worker.remote.v1.Node}).
+ * gRPC server of the task-grid node: sidecars connect to it ({@code taskgrid.worker.remote.v1.Node}), and clients
+ * when the gateway is on ({@code taskgrid.gateway.v1.TaskGateway}).
  * <p>
  * Starts before the web server and stops after it: requests of clients still waiting for pages need the sidecars.
  * By then nobody waits for results, so the sessions are cancelled at once (the queue is in memory): sidecars
@@ -47,22 +50,23 @@ public final class NodeServer implements SmartLifecycle {
     public static final int PHASE = SmartLifecycle.DEFAULT_PHASE - 4096;
 
     private final int port;
-    private final NodeService service;
+    private final List<BindableService> services;
     private final Keepalive keepalive;
     private final Duration shutdownTimeout;
     private volatile Server server;
 
     /**
-     * @param port 0 - any free one, see {@link #port()}
+     * @param port     0 - any free one, see {@link #port()}
+     * @param services NodeService of the remote worker, the gateway of clients
      */
     public NodeServer(
         int port,
-        NodeService service,
+        List<BindableService> services,
         Keepalive keepalive,
         Duration shutdownTimeout
     ) {
         this.port = port;
-        this.service = service;
+        this.services = List.copyOf(services);
         this.keepalive = keepalive;
         this.shutdownTimeout = shutdownTimeout;
     }
@@ -70,8 +74,9 @@ public final class NodeServer implements SmartLifecycle {
     @Override
     public void start() {
         try {
-            server = Grpc.newServerBuilderForPort(port, InsecureServerCredentials.create())
-                .addService(service)
+            final ServerBuilder<?> builder = Grpc.newServerBuilderForPort(port, InsecureServerCredentials.create());
+            services.forEach(builder::addService);
+            server = builder
                 .keepAliveTime(keepalive.time().toNanos(), TimeUnit.NANOSECONDS)
                 .keepAliveTimeout(keepalive.timeout().toNanos(), TimeUnit.NANOSECONDS)
                 .permitKeepAliveTime(keepalive.permitTime().toNanos(), TimeUnit.NANOSECONDS)

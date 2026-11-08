@@ -9,13 +9,18 @@ whoever submits a task and the handler that executes it. Everything in between (
 ## Flow
 
 ```
-client ── TaskQueue.submit(Task) ──► queue ── onReady(Attempt) ──► Dispatcher ── Worker.assign(Attempt) ──► handler
-                                     (partitions,                     │                              (in-process, or
-                                      pauses)  ◄── TaskQueue.complete ◄┴── onComplete(AttemptResult) ◄── behind sidecar)
-                                       │
-                                       ├── ResultStore.put(TaskResult) ──► client (await)
-                                       └── onResult(TaskResult) ──► reply to a client elsewhere
+client ── TaskQueue.submit(Task, Request) ──► queue ── onReady(Attempt) ──► Dispatcher ── Worker.assign(Attempt) ──► handler
+                                              (partitions,                     │                       (in-process, or
+                                               pauses)  ◄── TaskQueue.complete ◄┴── onComplete ◄─────── behind sidecar)
+                                                │
+                                                └── onResult(TaskResult, requests) ──► Mailbox.put ──► client (subscribe, ack)
+                                                                                   └─► reply over the transport (reply_to)
 ```
+
+The queue keeps the tasks, not the results: a final result goes to the `ResultCallback`s before the end of its task
+is persisted ([D32](decisions.md#d32-one-task-for-the-same-payload-results-leave-the-queue-before-its-end)); a client
+that is not waiting on the node of the task gets it through its box in the `Mailbox`
+([D31](decisions.md#d31-client-gateway-results-wait-in-the-mailbox-of-a-consumer)).
 
 Queue and worker do not know each other; `Dispatcher` connects them through their ports
 ([D24](decisions.md#d24-queue-and-worker-are-decoupled-dispatcher-connects-them)). `assign` only hands the attempt
@@ -26,7 +31,9 @@ the result may arrive at another node than the one that assigned it.
 
 | Term | Meaning |
 |---|---|
-| **Task** | Unit of work submitted by a client: id (set by the client), payload, meta. |
+| **Task** | Unit of work: id, payload, meta. The id is the identity of the work - the hash of the payload (`Task.of`): requests with the same payload while the task is in the queue are one task, done once. |
+| **Request** | One ask for a task: `RequestId` (client, consumer, the id the client gave - the key of idempotency and the address of the result) and tags of this requester that come back with the result. |
+| **Box** | Client + consumer: where the results of its requests wait in the `Mailbox` until acknowledged; at most a limit of requests not acknowledged. |
 | **Meta** | Small string properties of a task; see [Meta](#meta). |
 | **Kind** | Meta key `kind`. Type of work. Selects the handlers able to execute the task; core does not interpret it. |
 | **Partition key** | Meta key `partition-key` (`TaskQueue.PARTITION_KEY`), optional. Tasks with the same key run one at a time, in order - one partition of the queue, with a pause (`DelayPolicy`) after each result (crawl-delay). For crawling - the host: politeness, for every kind. Not set - the task is independent. |
@@ -39,7 +46,7 @@ the result may arrive at another node than the one that assigned it.
 | **Worker** | Core port: executes attempts. In-process implementation calls handlers in the JVM; remote one sends attempts to sidecars. The prototype called it `Dispatch`. |
 | **Handler** | The code doing the work for a kind: a Java interface in the JVM, or a process behind a sidecar exposing one unary gRPC method (for example `fetcher`). |
 | **handler-sidecar** | Go process deployed next to a remote handler: sessions with every node (DNS), shared credits, completion retries, drain, large results to S3. Convention for handlers - [handler-sidecar/README.md](../handler-sidecar/README.md). |
-| **Node** | One JVM process of task-grid: queues, results, worker. |
+| **Node** | One JVM process of task-grid: queues, worker, mailbox. |
 | **Attempt status** | How an attempt ended. `DONE` - there is a result; domain errors (HTTP 404) are `DONE` too, they are content. `FAILED` - final, no retry. `RETRY` - technical failure, the attempt counts. Later statuses come with their mechanisms: `RATE_LIMITED` with pauses per key, `RELEASED` with drain. |
 | **Task status** | Final status for the client: `DONE` or `FAILED` (final failure or attempts exhausted). |
 | **Task result** | Final result of a task: status, body or error, meta of the task plus keys added on the way (`attempts`). |
@@ -58,14 +65,15 @@ the result may arrive at another node than the one that assigned it.
 
 | Package | Contents |
 |---|---|
-| `task` | Task, Attempt, statuses, results, Blob - pure types |
+| `task` | Task, Request, RequestId, Attempt, statuses, results, Blob - pure types |
 | `queue` | `TaskQueue` port (submit, complete; `onReady` - `ReadyCallback` for attempts ready to run; `onResult` - `ResultCallback` for final results on the node where a task finished), `DelayPolicy`, `QueueSettings` |
-| `result` | `ResultStore` port |
+| `mailbox` | `Mailbox` port (reserve, release, put, subscribe, ack), `Box`, `Reply`, `MailboxSettings` |
+| `gateway` | `Gateway` - the entry of clients (reserve, submit, wait on this node), `TaskCodec` of the application, `Call`, `Submission`; transports - `task-grid-gateway-grpc`, `task-grid-gateway-amqp` |
 | `worker` | `Worker` (assign, `onComplete`), `AttemptCallback`, `Assignment` |
 | `dispatch` | `Dispatcher` - connects a queue to a worker |
-| `queue.partition` | `Partition` - event-sourced state machine of the tasks of one partition key (commands decide `PartitionEvent`s, `apply` changes the state; time is a parameter), `PartitionSnapshot`; shared by the queue engines |
+| `queue.partition` | `Partition` - event-sourced state machine of the tasks of one partition key and their requests (commands decide a `Step` - `PartitionEvent`s and a final result to deliver first; `apply` changes the state; time is a parameter), `PartitionSnapshot`; shared by the queue engines |
 | `queue.memory` | `MemoryTaskQueue` - single-node engine of partitions: events applied at once, a timer per partition |
-| `result.memory` | `MemoryResultStore` - single-node store with TTL |
+| `mailbox.memory` | `MemoryMailbox` - boxes of a single node, TTL |
 | `worker.local` | `LocalWorker` - runs in-process handlers on an executor; `Handler`, `RetryableException` |
 
 The remote worker is a separate library, `task-grid-worker-remote`: `RemoteWorker` (engine, pool `Load` by kind),

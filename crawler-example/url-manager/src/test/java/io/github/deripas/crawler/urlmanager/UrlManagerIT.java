@@ -6,14 +6,24 @@ import io.github.deripas.crawler.fetcher.grpc.FetcherService;
 import io.github.deripas.crawler.fetcher.http.ApacheFetcher;
 import io.github.deripas.crawler.urlmanager.api.FetchController;
 import io.github.deripas.crawler.urlmanager.app.UrlManagerApplication;
-import io.github.deripas.crawler.urlmanager.amqp.RabbitFetchListener;
 import io.github.deripas.crawler.urlmanager.grpc.NodeServer;
+import io.github.deripas.crawler.urlmanager.protocol.Replies;
 import io.github.deripas.crawler.urlmanager.v1.FetchReply;
 import io.github.deripas.crawler.urlmanager.v1.FetchRequest;
 import io.github.deripas.crawler.urlmanager.v1.Refusal;
+import io.github.deripas.taskgrid.gateway.grpc.v1.AckReply;
+import io.github.deripas.taskgrid.gateway.grpc.v1.AckRequest;
+import io.github.deripas.taskgrid.gateway.grpc.v1.Result;
+import io.github.deripas.taskgrid.gateway.grpc.v1.SubmitRequest;
+import io.github.deripas.taskgrid.gateway.grpc.v1.SubscribeRequest;
+import io.github.deripas.taskgrid.gateway.grpc.v1.TaskGatewayGrpc;
+import io.grpc.Context;
 import io.grpc.Grpc;
+import io.grpc.InsecureChannelCredentials;
 import io.grpc.InsecureServerCredentials;
+import io.grpc.ManagedChannel;
 import io.grpc.Server;
+import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -41,11 +51,14 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
@@ -54,6 +67,8 @@ import static com.github.tomakehurst.wiremock.client.WireMock.urlPathMatching;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -227,10 +242,55 @@ class UrlManagerIT {
 
         final FetchReply reply = rabbitFetch("r-1", "http://127.0.0.1:" + site.port() + "/rabbit");
 
-        assertEquals("r-1", reply.getRequestId());
         assertEquals(200, reply.getPage().getStatus());
         assertEquals("<html>rabbit</html>", reply.getPage().getBody().toStringUtf8());
         assertTrue(reply.getPage().getHeadersList().stream().anyMatch(h -> h.getName().equalsIgnoreCase("Content-Type")));
+    }
+
+    /**
+     * A client over the gRPC gateway on the port of the node: FetchRequest as the payload, FetchReply in the stream of
+     * its box - a large page read from SeaweedFS too; acknowledged results do not come again.
+     */
+    @Test
+    void pagesOverTheGateway() throws Exception {
+        final String large = sitemap(1 << 20);
+        site.stubFor(get("/gateway/page").willReturn(aResponse().withBody("<html>gateway</html>")));
+        site.stubFor(get("/gateway/sitemap.xml").willReturn(aResponse().withBody(large)));
+        final ManagedChannel channel = Grpc.newChannelBuilderForAddress("127.0.0.1",
+            urlManager.getBean(NodeServer.class).port(), InsecureChannelCredentials.create()).build();
+        try {
+            final TaskGatewayGrpc.TaskGatewayBlockingStub gateway = TaskGatewayGrpc.newBlockingStub(channel);
+            gatewaySubmit(gateway, "g-1", "http://127.0.0.1:" + site.port() + "/gateway/page");
+            gatewaySubmit(gateway, "g-2", "http://127.0.0.1:" + site.port() + "/gateway/sitemap.xml");
+
+            final Map<String, FetchReply> replies = new HashMap<>();
+            final BlockingQueue<Result> stream = new LinkedBlockingQueue<>();
+            final Context.CancellableContext subscription = Context.current().withCancellation();
+            subscription.run(() -> TaskGatewayGrpc.newStub(channel).subscribe(
+                SubscribeRequest.newBuilder().setClient("pagenator").setConsumer("0").build(), collect(stream)));
+            for (int i = 0; i < 2; i++) {
+                final Result result = stream.poll(WAIT.toSeconds(), TimeUnit.SECONDS);
+                assertNotNull(result, "no result within " + WAIT);
+                replies.put(result.getId(), FetchReply.parseFrom(result.getPayload()));
+            }
+            assertEquals("<html>gateway</html>", replies.get("g-1").getPage().getBody().toStringUtf8());
+            assertEquals("g-2", replies.get("g-2").getRequestId());
+            assertEquals(large, replies.get("g-2").getPage().getBody().toStringUtf8());
+
+            final CompletableFuture<AckReply> acked = new CompletableFuture<>();
+            final StreamObserver<AckRequest> acks = TaskGatewayGrpc.newStub(channel).ack(collect(acked));
+            acks.onNext(AckRequest.newBuilder().setClient("pagenator").setConsumer("0").addIds("g-1").addIds("g-2").build());
+            acks.onCompleted();
+            acked.get(WAIT.toSeconds(), TimeUnit.SECONDS);
+            subscription.cancel(null);
+
+            final BlockingQueue<Result> again = new LinkedBlockingQueue<>();
+            TaskGatewayGrpc.newStub(channel).subscribe(
+                SubscribeRequest.newBuilder().setClient("pagenator").setConsumer("0").build(), collect(again));
+            assertNull(again.poll(500, TimeUnit.MILLISECONDS), "acknowledged results do not come again");
+        } finally {
+            channel.shutdownNow();
+        }
     }
 
     /**
@@ -306,7 +366,6 @@ class UrlManagerIT {
                 assertEquals(0, unacknowledged(SUBMIT_REQUESTS), "the request is acknowledged once queued");
 
                 final FetchReply page = reply.get(WAIT.toSeconds(), TimeUnit.SECONDS);
-                assertEquals("r-5", page.getRequestId());
                 assertEquals("submitted", page.getPage().getBody().toStringUtf8());
             } finally {
                 targetSidecar.stop();
@@ -323,6 +382,7 @@ class UrlManagerIT {
     void clusterModeKeepsRequestsOverARestart() throws Exception {
         site.stubFor(get("/cluster/a").willReturn(aResponse().withFixedDelay(3_000).withBody("page a")));
         site.stubFor(get("/cluster/b").willReturn(aResponse().withBody("page b")));
+        site.stubFor(get("/cluster/c").willReturn(aResponse().withBody("page c")));
         try (GenericContainer<?> scylla = new GenericContainer<>("scylladb/scylla:2026.3")
             .withCommand("--smp", "1", "--memory", "512M", "--overprovisioned", "1", "--developer-mode", "1")
             .withExposedPorts(CQL_PORT)
@@ -348,13 +408,34 @@ class UrlManagerIT {
                     assertTrue(System.nanoTime() < deadline, "A not in work within " + WAIT);
                     Thread.sleep(50);
                 }
+                // the same page asked for over the gateway joins the task of A
+                final ManagedChannel channel = Grpc.newChannelBuilderForAddress("127.0.0.1", grpcPort, InsecureChannelCredentials.create())
+                    .build();
+                final BlockingQueue<Result> results = new LinkedBlockingQueue<>();
+                try {
+                    gatewaySubmit(TaskGatewayGrpc.newBlockingStub(channel), "gc-a", host + "/cluster/a");
 
-                node.close();
-                node = startUrlManager(CLUSTER_REQUESTS, "after-submit", cluster);
+                    node.close();
+                    node = startUrlManager(CLUSTER_REQUESTS, "after-submit", cluster);
 
-                assertEquals("page a", a.get(WAIT.toSeconds(), TimeUnit.SECONDS).getPage().getBody().toStringUtf8());
-                assertEquals("page b", b.get(WAIT.toSeconds(), TimeUnit.SECONDS).getPage().getBody().toStringUtf8());
-                assertEquals(1, served("/cluster/a", "127.0.0.1").size(), "A is not fetched again");
+                    assertEquals("page a", a.get(WAIT.toSeconds(), TimeUnit.SECONDS).getPage().getBody().toStringUtf8());
+                    assertEquals("page b", b.get(WAIT.toSeconds(), TimeUnit.SECONDS).getPage().getBody().toStringUtf8());
+                    TaskGatewayGrpc.newStub(channel).subscribe(
+                        SubscribeRequest.newBuilder().setClient("pagenator").setConsumer("0").build(), collect(results));
+                    final Result result = results.poll(WAIT.toSeconds(), TimeUnit.SECONDS);
+                    assertNotNull(result, "the result of the gateway request waits in its box over the restart");
+                    assertEquals("page a", FetchReply.parseFrom(result.getPayload()).getPage().getBody().toStringUtf8());
+                } finally {
+                    channel.shutdownNow();
+                }
+                assertEquals(1, served("/cluster/a", "127.0.0.1").size(), "A is fetched once: not again, not per request");
+
+                final int port = node.getEnvironment().getRequiredProperty("local.server.port", Integer.class);
+                final HttpRequest post = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/fetch"))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString("{\"url\": \"" + host + "/cluster/c\"}"))
+                    .build();
+                assertEquals("page c", HTTP.send(post, HttpResponse.BodyHandlers.ofString()).body(), "POST /fetch in the cluster");
             } finally {
                 clusterSidecar.stop();
                 node.close();
@@ -459,7 +540,7 @@ class UrlManagerIT {
         String url
     ) throws Exception {
         final MessageProperties properties = new MessageProperties();
-        properties.setContentType(RabbitFetchListener.CONTENT_TYPE);
+        properties.setContentType(Replies.CONTENT_TYPE);
         final byte[] body = FetchRequest.newBuilder().setRequestId(id).setUrl(url).build().toByteArray();
         final Message reply = requests.sendAndReceive("", queue, new Message(body, properties));
         assertTrue(reply != null, "no reply within " + WAIT);
@@ -515,6 +596,52 @@ class UrlManagerIT {
 
     private static long started(ServeEvent event) {
         return event.getRequest().getLoggedDate().getTime();
+    }
+
+    private static void gatewaySubmit(
+        TaskGatewayGrpc.TaskGatewayBlockingStub gateway,
+        String id,
+        String url
+    ) {
+        gateway.submit(SubmitRequest.newBuilder()
+            .setClient("pagenator").setConsumer("0").setId(id)
+            .setPayload(FetchRequest.newBuilder().setUrl(url).build().toByteString())
+            .build());
+    }
+
+    private static <T> StreamObserver<T> collect(BlockingQueue<T> into) {
+        return new StreamObserver<>() {
+            @Override
+            public void onNext(T value) {
+                into.add(value);
+            }
+
+            @Override
+            public void onError(Throwable error) {
+            }
+
+            @Override
+            public void onCompleted() {
+            }
+        };
+    }
+
+    private static <T> StreamObserver<T> collect(CompletableFuture<T> into) {
+        return new StreamObserver<>() {
+            @Override
+            public void onNext(T value) {
+                into.complete(value);
+            }
+
+            @Override
+            public void onError(Throwable error) {
+                into.completeExceptionally(error);
+            }
+
+            @Override
+            public void onCompleted() {
+            }
+        };
     }
 
     private static String sitemap(int size) {

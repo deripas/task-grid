@@ -7,6 +7,7 @@ import io.github.deripas.taskgrid.task.Attempt;
 import io.github.deripas.taskgrid.task.AttemptResult;
 import io.github.deripas.taskgrid.task.AttemptStatus;
 import io.github.deripas.taskgrid.task.Blob;
+import io.github.deripas.taskgrid.task.Request;
 import io.github.deripas.taskgrid.task.Task;
 import io.github.deripas.taskgrid.worker.Assignment;
 import io.github.deripas.taskgrid.worker.AttemptCallback;
@@ -84,7 +85,7 @@ class DispatcherTest {
         private ReadyCallback ready;
 
         @Override
-        public CompletionStage<Void> submit(Task task) {
+        public CompletionStage<Void> submit(Task task, Request request) {
             throw new UnsupportedOperationException();
         }
 

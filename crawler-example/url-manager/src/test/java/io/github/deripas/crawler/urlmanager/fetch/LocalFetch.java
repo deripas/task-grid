@@ -1,11 +1,13 @@
 package io.github.deripas.crawler.urlmanager.fetch;
 
 import io.github.deripas.taskgrid.dispatch.Dispatcher;
+import io.github.deripas.taskgrid.gateway.Gateway;
+import io.github.deripas.taskgrid.mailbox.MailboxSettings;
+import io.github.deripas.taskgrid.mailbox.MailboxSink;
+import io.github.deripas.taskgrid.mailbox.memory.MemoryMailbox;
 import io.github.deripas.taskgrid.queue.DelayPolicy;
 import io.github.deripas.taskgrid.queue.QueueSettings;
 import io.github.deripas.taskgrid.queue.memory.MemoryTaskQueue;
-import io.github.deripas.taskgrid.result.ResultStore;
-import io.github.deripas.taskgrid.result.memory.MemoryResultStore;
 import io.github.deripas.taskgrid.task.Attempt;
 import io.github.deripas.taskgrid.task.Blob;
 import io.github.deripas.taskgrid.worker.local.Handler;
@@ -37,14 +39,26 @@ public final class LocalFetch implements AutoCloseable {
      * @param blobs   reads results the handler returns as references
      */
     public LocalFetch(Handler handler, BlobReader blobs) {
-        final ResultStore results = new MemoryResultStore(Duration.ofMinutes(1), Clock.systemUTC());
+        this(handler, blobs, 1000);
+    }
+
+    /**
+     * @param boxLimit requests of a waiting client in work at once
+     */
+    public LocalFetch(
+        Handler handler,
+        BlobReader blobs,
+        int boxLimit
+    ) {
         final Handler recording = attempt -> {
             attempts.add(attempt);
             return handler.handle(attempt);
         };
-        queue = new MemoryTaskQueue(new QueueSettings(2, Duration.ofMinutes(1)), DelayPolicy.NONE, results);
+        queue = new MemoryTaskQueue(new QueueSettings(2, Duration.ofMinutes(1)), DelayPolicy.NONE);
         Dispatcher.connect(queue, new LocalWorker(Map.of(FetchService.KIND, recording), executor));
-        this.service = new FetchService(queue, results, new PageCodec() {
+        final MemoryMailbox mailbox = new MemoryMailbox(new MailboxSettings(boxLimit, Duration.ofMinutes(1)), Clock.systemUTC());
+        queue.onResult(new MailboxSink(mailbox));
+        this.service = new FetchService(new Gateway(queue, mailbox, "node-1"), new PageCodec() {
             @Override
             public byte[] request(PageUrl url) {
                 return url.uri().toString().getBytes(StandardCharsets.UTF_8);

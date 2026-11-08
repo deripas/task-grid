@@ -13,7 +13,6 @@ import java.net.http.HttpResponse;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -37,26 +36,6 @@ class UrlManagerApplicationTest {
             assertEquals(400, response.statusCode(), response.body());
             assertTrue(response.headers().firstValue("Content-Type").orElseThrow().startsWith("application/problem+json"));
         }
-    }
-
-    /**
-     * In the cluster a result may finish on another node than the one that took the request: after-reply cannot work.
-     */
-    @Test
-    void clusterModeRefusesAckAfterReply() {
-        final Exception error = assertThrows(Exception.class, () -> new SpringApplicationBuilder(UrlManagerApplication.class)
-            .run("--server.port=0", "--url-manager.grpc-port=0", "--url-manager.queue=cluster",
-                "--url-manager.rabbit.enabled=true", "--url-manager.rabbit.ack=after-reply")
-            .close());
-        assertTrue(rootCause(error).getMessage().contains("after-submit"), String.valueOf(rootCause(error)));
-    }
-
-    private static Throwable rootCause(Throwable error) {
-        Throwable cause = error;
-        while (cause.getCause() != null) {
-            cause = cause.getCause();
-        }
-        return cause;
     }
 
     /**

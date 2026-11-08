@@ -2,10 +2,9 @@ package io.github.deripas.taskgrid.queue.pekko;
 
 import io.github.deripas.taskgrid.queue.ReadyCallback;
 import io.github.deripas.taskgrid.queue.ResultCallback;
-import io.github.deripas.taskgrid.result.ResultStore;
 import io.github.deripas.taskgrid.task.Attempt;
+import io.github.deripas.taskgrid.task.Request;
 import io.github.deripas.taskgrid.task.TaskResult;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
@@ -18,9 +17,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * Receivers of this node: the partitions living here hand their attempts and final results to them.
  */
 @Slf4j
-@RequiredArgsConstructor
 final class Receivers {
-    private final ResultStore results;
     private final List<ReadyCallback> ready = new CopyOnWriteArrayList<>();
     private final List<ResultCallback> callbacks = new CopyOnWriteArrayList<>();
 
@@ -43,13 +40,12 @@ final class Receivers {
     }
 
     /**
-     * Into the result store and to every callback; completes normally when all of them did.
+     * To every callback; completes normally when all of them did.
      */
-    CompletionStage<Void> deliver(TaskResult result) {
-        final List<CompletableFuture<Void>> stages = new ArrayList<>(callbacks.size() + 1);
-        stages.add(call(() -> results.put(result)));
+    CompletionStage<Void> deliver(TaskResult result, List<Request> requests) {
+        final List<CompletableFuture<Void>> stages = new ArrayList<>(callbacks.size());
         for (ResultCallback callback : callbacks) {
-            stages.add(call(() -> callback.finished(result)));
+            stages.add(call(() -> callback.finished(result, requests)));
         }
         return CompletableFuture.allOf(stages.toArray(CompletableFuture[]::new));
     }

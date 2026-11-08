@@ -1,12 +1,17 @@
 // Client of url-manager over RabbitMQ: a fetch request to the queue of url-manager, the reply to reply_to.
+// The same messages over gRPC: FetchRequest is the payload of Submit of taskgrid.gateway.v1.TaskGateway on the node
+// port, FetchReply - the payload of a Result of the box. Both transports are gateways of task-grid; this protocol is
+// the codec of url-manager.
 //
 // - Request: a message to the queue (url-manager.rabbit.queue), body - FetchRequest, content type
 //   application/x-protobuf. The reply goes to the queue in reply_to with the same correlation_id; a message without
 //   reply_to is acknowledged and dropped: there is nowhere to send the page.
+// - The id of a request is the hash of its message: a message delivered again is the same request; the same page
+//   asked for by several requests at once is fetched once, each gets the reply.
 // - Reply: FetchReply - the page of the site (any HTTP status of the site, 404 included, is a page), or a refusal.
-// - At least once: url-manager acknowledges a request only after its reply is confirmed by the broker (the queue of
-//   tasks is in memory), so a request of a url-manager that stopped is delivered again and fetched again. A client
-//   may get a reply twice; request_id tells them apart.
+// - At least once: with ack after-reply url-manager acknowledges a request only after its reply is confirmed by the
+//   broker, so a request of a url-manager that stopped is delivered again. A client may get a reply twice; its
+//   correlation_id tells them apart.
 // - The body of a page is in the reply as is, up to the limit of the fetcher (100 MiB): max_message_size of the
 //   broker must allow it.
 syntax = "proto3";
@@ -17,14 +22,15 @@ option java_multiple_files = true;
 option java_package = "io.github.deripas.crawler.urlmanager.v1";
 
 message FetchRequest {
-  // Identity of the request, chosen by the client; a request delivered again with the same id while it is
-  // still queued is not queued twice. Empty - the message_id of the AMQP message, or a new random id.
+  // Of the client, not read: part of the message - two requests with other ids are two requests.
   string request_id = 1;
   string url = 2;           // absolute http(s) URL
-  int64 timeout_ms = 3;     // wait for the page; 0 - the default of url-manager, capped by its maximum
+  int64 timeout_ms = 3;     // not read: a request waits url-manager.default-timeout (ack after-reply)
 }
 
 message FetchReply {
+  // The id of the request on its transport: the correlation_id of the message (else the hash of the message), the id
+  // of a gRPC request.
   string request_id = 1;
   oneof outcome {
     Page page = 2;
@@ -52,5 +58,6 @@ message Refusal {
     CODE_INVALID = 1;       // the body is not FetchRequest, the URL is not an absolute http(s) URL
     CODE_FAILED = 2;        // the site cannot be reached, the body is too large, attempts are exhausted
     CODE_TIMEOUT = 3;       // no page within the timeout
+    CODE_BUSY = 4;          // too many requests of the client in work on this url-manager; send it again later
   }
 }

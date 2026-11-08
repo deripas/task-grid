@@ -8,19 +8,16 @@ import com.tngtech.archunit.lang.ArchRule;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 import static com.tngtech.archunit.library.Architectures.layeredArchitecture;
-import static com.tngtech.archunit.library.dependencies.SlicesRuleDefinition.slices;
 
 /**
  * Architecture rules of task-grid-queue-pekko, checked by the regular build ({@code make verify}).
  * <pre>
- *   serialization  TaskGridJacksonModule - Jackson for the types of the core; found by Pekko through reference.conf,
- *                  nobody sees it
- *
  *   pekko          PekkoTaskQueue (port TaskQueue), PartitionEntity (sharded event-sourced engine of a Partition),
  *                  Receivers (callbacks of the node)
  *     ↓
- *   core           task, queue, queue.partition, result of task-grid-core (not its implementations, not worker)
+ *   core           task, queue, queue.partition of task-grid-core (not its implementations, not worker)
  * </pre>
+ * Jackson for the types of the core - task-grid-pekko-core.
  * The application creates the actor system (cluster, journal) and connects the queue to a worker (Dispatcher).
  * A rule gets in the way - change it here explicitly, with a reason next to it; do not work around it.
  */
@@ -34,8 +31,6 @@ class ArchitectureTest {
         .consideringOnlyDependenciesInLayers()
         .ensureAllClassesAreContainedInArchitecture()
         .layer("pekko").definedBy(BASE)
-        .layer("serialization").definedBy(BASE + ".serialization..")
-        .whereLayer("serialization").mayNotBeAccessedByAnyLayer()
         .whereLayer("pekko").mayNotBeAccessedByAnyLayer();
 
     /**
@@ -45,12 +40,8 @@ class ArchitectureTest {
     static final ArchRule ENGINE_DEPENDENCIES = classes().that().resideInAPackage(BASE)
         .should().onlyDependOnClassesThat().resideInAnyPackage(
             "java..", "org.slf4j..", "lombok..", "org.apache.pekko..", "com.typesafe.config..", "scala..",
-            CORE + ".task", CORE + ".queue", CORE + ".queue.partition", CORE + ".result", BASE);
+            CORE + ".task", CORE + ".queue", CORE + ".queue.partition", BASE);
 
     @ArchTest
-    static final ArchRule JACKSON_ONLY_IN_SERIALIZATION = noClasses().that().resideOutsideOfPackage(BASE + ".serialization..")
-        .should().dependOnClassesThat().resideInAnyPackage("com.fasterxml.jackson..");
-
-    @ArchTest
-    static final ArchRule NO_CYCLES = slices().matching(BASE + ".(**)").should().beFreeOfCycles();
+    static final ArchRule NO_JACKSON = noClasses().should().dependOnClassesThat().resideInAnyPackage("com.fasterxml.jackson..");
 }

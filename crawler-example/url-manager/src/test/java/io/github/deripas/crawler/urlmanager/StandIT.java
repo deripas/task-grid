@@ -6,9 +6,19 @@ import com.rabbitmq.client.AMQP;
 import com.rabbitmq.client.Channel;
 import com.rabbitmq.client.Connection;
 import com.rabbitmq.client.ConnectionFactory;
-import io.github.deripas.crawler.urlmanager.amqp.RabbitFetchListener;
+import io.github.deripas.crawler.urlmanager.protocol.Replies;
 import io.github.deripas.crawler.urlmanager.v1.FetchReply;
 import io.github.deripas.crawler.urlmanager.v1.FetchRequest;
+import io.github.deripas.taskgrid.gateway.grpc.v1.AckReply;
+import io.github.deripas.taskgrid.gateway.grpc.v1.AckRequest;
+import io.github.deripas.taskgrid.gateway.grpc.v1.Result;
+import io.github.deripas.taskgrid.gateway.grpc.v1.SubmitRequest;
+import io.github.deripas.taskgrid.gateway.grpc.v1.SubscribeRequest;
+import io.github.deripas.taskgrid.gateway.grpc.v1.TaskGatewayGrpc;
+import io.grpc.Grpc;
+import io.grpc.InsecureChannelCredentials;
+import io.grpc.ManagedChannel;
+import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.ComposeContainer;
@@ -21,7 +31,10 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.anyRequestedFor;
@@ -48,6 +61,11 @@ class StandIT {
     private static final String EXCHANGE = "url-manager.fetch";
     private static final int AMQP_PORT = 5672;
     private static final int SITE_PORT = 8080;
+    private static final int NODE_PORT = 9090;
+    /**
+     * Pages asked for over the gRPC gateway in the cluster profile.
+     */
+    private static final int GATEWAY_PAGES = 4;
 
     /**
      * Queues of their own behind the exchange: the instance with the most requests in work is restarted; its
@@ -69,17 +87,88 @@ class StandIT {
 
     /**
      * One queue, partitions in the Pekko cluster: a node leaves for good; its partitions move to the other nodes with
-     * their journal, results of attempts in progress come through the other nodes.
+     * their journal, results of attempts in progress come through the other nodes. A client of the gRPC gateway
+     * submits to one node and takes its results from another: the boxes are in the cluster too.
      */
     @Test
     void clusterProfileSurvivesALostNode() throws Exception {
         try (ComposeContainer stand = stand("cluster")) {
             stand.start();
-            crawl(stand, "rabbitmq-cluster", () -> {
-                final String id = container(stand, "url-manager-cluster-2").getContainerId();
-                DockerClientFactory.instance().client().stopContainerCmd(id).withTimeout(40).exec();
-            });
+            final ManagedChannel first = channel(stand, "url-manager-cluster-1");
+            final ManagedChannel third = channel(stand, "url-manager-cluster-3");
+            try {
+                final Map<String, String> expected = new ConcurrentHashMap<>();
+                for (int i = 0; i < GATEWAY_PAGES; i++) {
+                    final String host = HOSTS.get(i % HOSTS.size());
+                    final String id = "g-" + i;
+                    final String url = "http://" + host + ":" + SITE_PORT + "/gateway/" + i;
+                    TaskGatewayGrpc.newBlockingStub(first).submit(SubmitRequest.newBuilder()
+                        .setClient("pagenator").setConsumer("0").setId(id)
+                        .setPayload(FetchRequest.newBuilder().setUrl(url).build().toByteString())
+                        .build());
+                    expected.put(id, "page " + host + "/gateway/" + i);
+                }
+                crawl(stand, "rabbitmq-cluster", () -> {
+                    final String id = container(stand, "url-manager-cluster-2").getContainerId();
+                    DockerClientFactory.instance().client().stopContainerCmd(id).withTimeout(40).exec();
+                });
+                assertGatewayResults(third, expected);
+            } finally {
+                first.shutdownNow();
+                third.shutdownNow();
+            }
         }
+    }
+
+    /**
+     * The results of the box come on the other node; acknowledged, they do not come again.
+     */
+    private static void assertGatewayResults(ManagedChannel channel, Map<String, String> expected) throws Exception {
+        final BlockingQueue<Result> results = new LinkedBlockingQueue<>();
+        TaskGatewayGrpc.newStub(channel).subscribe(SubscribeRequest.newBuilder().setClient("pagenator").setConsumer("0").build(),
+            new StreamObserver<>() {
+                @Override
+                public void onNext(Result result) {
+                    results.add(result);
+                }
+
+                @Override
+                public void onError(Throwable error) {
+                }
+
+                @Override
+                public void onCompleted() {
+                }
+            });
+        final Map<String, String> pages = new ConcurrentHashMap<>();
+        final long deadline = System.nanoTime() + WAIT.toNanos();
+        while (pages.size() < expected.size()) {
+            final Result result = results.poll(Math.max(1, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+            assertTrue(result != null, "gateway results: " + pages.keySet() + " within " + WAIT);
+            pages.put(result.getId(), FetchReply.parseFrom(result.getPayload()).getPage().getBody().toStringUtf8());
+        }
+        assertEquals(expected, pages);
+        final StreamObserver<AckRequest> acks = TaskGatewayGrpc.newStub(channel).ack(new StreamObserver<>() {
+            @Override
+            public void onNext(AckReply reply) {
+            }
+
+            @Override
+            public void onError(Throwable error) {
+            }
+
+            @Override
+            public void onCompleted() {
+            }
+        });
+        acks.onNext(AckRequest.newBuilder().setClient("pagenator").setConsumer("0").addAllIds(expected.keySet()).build());
+        acks.onCompleted();
+    }
+
+    private static ManagedChannel channel(ComposeContainer stand, String service) {
+        final String instance = instance(service);
+        return Grpc.newChannelBuilderForAddress(stand.getServiceHost(instance, NODE_PORT), stand.getServicePort(instance, NODE_PORT),
+            InsecureChannelCredentials.create()).build();
     }
 
     private static ComposeContainer stand(String profile) {
@@ -94,6 +183,11 @@ class StandIT {
             .withStartupTimeout(START);
         for (int i = 1; i <= 3; i++) {
             stand.waitingFor(instance("url-manager-" + profile + "-" + i), Wait.forLogMessage(".*Started UrlManagerApplication.*", 1));
+        }
+        if ("cluster".equals(profile)) {
+            // the gRPC gateway of two nodes: submit to one, take the results from another
+            stand.withExposedService(instance("url-manager-cluster-1"), NODE_PORT)
+                .withExposedService(instance("url-manager-cluster-3"), NODE_PORT);
         }
         return stand;
     }
@@ -133,7 +227,7 @@ class StandIT {
             for (String id : expected.keySet()) {
                 final String host = id.substring(0, id.indexOf('/'));
                 final AMQP.BasicProperties properties = new AMQP.BasicProperties.Builder()
-                    .contentType(RabbitFetchListener.CONTENT_TYPE)
+                    .contentType(Replies.CONTENT_TYPE)
                     .replyTo(replyTo)
                     .correlationId(id)
                     .build();

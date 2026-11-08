@@ -78,6 +78,9 @@ around these two parts.
 libs/task-grid-core           domain, ports (queue, worker), in-memory queue, dispatcher
 libs/task-grid-queue-pekko    persistent queue on Pekko Cluster Sharding + Persistence
 libs/task-grid-worker-remote  remote worker: protocol (remote.proto), credit, affinity, gRPC service
+libs/task-grid-gateway-grpc   clients over gRPC: submit, a stream of results of their box, ack
+libs/task-grid-gateway-amqp   clients over RabbitMQ: request messages, replies to reply_to
+libs/task-grid-mailbox-pekko  the boxes of the results in the Pekko cluster (task-grid-pekko-core - shared serialization)
 handler-sidecar/              Go sidecar next to a handler
 crawler-example/              the crawler: url-manager, fetcher, docker-compose stand
 docs/                         roadmap, decisions, concepts, structure

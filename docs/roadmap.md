@@ -60,7 +60,26 @@ Agreed decisions - [decisions.md](decisions.md), layout - [structure.md](structu
        a consistent-hash exchange, `after-reply`) and `cluster` (Pekko + ScyllaDB, one queue, `after-submit`); sidecars
        + fetchers as pods, SeaweedFS, a fake site. `StandIT` (`make stand-it`): a url-manager stopped in the middle of
        work, every page comes, crawl-delay holds per host (D30).
-15. `[ ]` **Later.** Spring Boot starter, more metrics (queue, attempts).
-   - **To discuss: client protocol over gRPC with long polling** - clients submit tasks, subscribe to (poll) their
-     results, ack / nack them; awaiting a result on any node of the cluster (`POST /fetch`, `after-reply` in cluster
-     mode) is the same problem. Whether it belongs to task-grid itself and whether it is built on Pekko directly.
+15. `[ ]` **Client gateway.** Clients submit tasks over their transport and get the results on any node of the
+   cluster; a box of a consumer holds its tasks until it acknowledges the results, at most a limit of them (D31).
+   - `[x]` **15a-1. Mailbox.** Port `Mailbox` in core on `RequestId` (`reserve` / `release` / `put` / `subscribe` /
+     `ack`, box = client + consumer, limit and ttl), `MemoryMailbox`.
+   - `[x]` **15a-2. Queue keeps requests, mailbox keeps results.** `Request` (`RequestId` + tags), task id = hash of
+     the payload, requests of the same task join it (`Joined`); `Started` / `Ended` without payload and result; the
+     final result is delivered before `Ended` (Pekko: stash, `delivery-timeout`), no outbox; `ResultStore` removed -
+     url-manager waits through boxes of its node, AMQP after-submit replies by `RequestId` (D32).
+   - `[x]` **15a-3. gRPC gateway.** `libs/task-grid-gateway-grpc`: `TaskGateway` (`Submit`, `Subscribe` - a stream
+     of results of a box, `Ack` - a stream of request ids), payload and reply - bytes of the application through its
+     `TaskCodec`; `Gateway` (reserve -> submit, release on failure), `MailboxSink` in core puts the results of marked
+     requests into their boxes on any node; url-manager reserves its waits too (`box-limit`, `Busy`).
+   - `[x]` **15a-4. url-manager over gRPC.** `FetchTaskCodec` (`FetchRequest` -> the task of its URL, the result ->
+     `FetchReply` built by `protocol.Replies`, shared with AMQP), `GatewayService` on the node port next to the
+     sidecars (memory mode; cluster - with the mailbox on Pekko), `UrlManagerIT.pagesOverTheGateway`.
+   - `[x]` **15a-5. Mailbox on Pekko.** `task-grid-pekko-core` (shared serialization), `task-grid-mailbox-pekko`
+     (a box is a sharded event-sourced entity, a subscriber follows it by heartbeat), cluster mode of url-manager with
+     the gateway, `POST /fetch` and `after-reply`, a gRPC client in `StandIT` (D34).
+   - `[x]` **15b. AMQP gateway.** `Gateway`, `TaskCodec` (with refusals), `Call` - in core (`gateway`): the whole way
+     from a client to a worker; `task-grid-gateway-amqp` on amqp-client (after-reply and after-submit, publisher
+     confirms, automatic recovery), the id of a request - the hash of its message; url-manager gives the codec of
+     `crawler.urlmanager.v1` and the Spring lifecycle (D35).
+16. `[ ]` **Later.** Spring Boot starter, more metrics (queue, attempts).

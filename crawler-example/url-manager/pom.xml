@@ -26,6 +26,18 @@
             <groupId>io.github.deripas</groupId>
             <artifactId>task-grid-worker-remote</artifactId>
         </dependency>
+        <dependency>
+            <groupId>io.github.deripas</groupId>
+            <artifactId>task-grid-gateway-grpc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.deripas</groupId>
+            <artifactId>task-grid-gateway-amqp</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.deripas</groupId>
+            <artifactId>task-grid-mailbox-pekko</artifactId>
+        </dependency>
         <!-- metrics of the worker pools for autoscaling: /actuator/prometheus -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

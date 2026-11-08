@@ -224,7 +224,8 @@ partition. The rules of the pause below still hold, except the one about rejecte
   `max_message_size` of the broker must allow it (RabbitMQ 4: 16 MiB by default); the production url-manager already
   passes such volumes through RabbitMQ.
 - The request id (client's `request_id`, else `message_id`) is the task id: a request delivered again while its task
-  is queued is not queued twice. A request without reply_to is acknowledged and dropped with a warning; a request
+  is queued is not queued twice. *(D32: the request id is the id of the request - `RequestId`; the task id is the hash
+  of the payload, so the same page asked for twice is one task.)* A request without reply_to is acknowledged and dropped with a warning; a request
   that is not `FetchRequest` or has a bad URL gets `CODE_INVALID`.
 - Spring AMQP of Spring Boot (`spring.rabbitmq.*`), manual acknowledgement on the channel of the delivery, from
   virtual threads.
@@ -308,7 +309,8 @@ partition. The rules of the pause below still hold, except the one about rejecte
   `CompleteRequest.meta = 8` echoed by the sidecar) - on any node, also after the partition moved.
 - Effects: `Started` - the attempt to the `ReadyCallback`s of the node of the partition (a `Dispatcher` to its local
   worker); `Ended` with a result - to the result store and the `ResultCallback`s, repeated every `redeliver-after`
-  until all succeed, then `Delivered` is persisted (at least once, also after a restart). An attempt in progress is not
+  until all succeed, then `Delivered` is persisted (at least once, also after a restart). *(D32: the result is
+  delivered before `Ended`, which carries no result; no result store, no `Delivered`.)* An attempt in progress is not
   handed out again after recovery: its result may still come; otherwise its deadline retries it.
 - Remembered entities with the event-sourced store (survives a restart of the whole cluster, no disk of the nodes),
   snapshots every 100 events (immutable `PartitionSnapshot` through a snapshot adapter, two kept, older events
@@ -343,7 +345,8 @@ partition. The rules of the pause below still hold, except the one about rejecte
   - the reply is sent by `onResult` on the node of the partition. `after-reply` and `POST /fetch` need the result on the
   node that took the request: refused / off in cluster mode until results can be awaited on any node (to discuss with
   the gRPC client protocol, roadmap 15). Without a consistent-hash exchange `after-reply` of the memory mode works but
-  keeps the crawl-delay per instance only.
+  keeps the crawl-delay per instance only. *(D34: with the mailbox on Pekko the result is awaited on any node -
+  `after-reply`, `POST /fetch` and the gRPC gateway work in cluster mode.)*
 - A result is taken only once the queue has it: `TaskQueue.complete` and `AttemptCallback.complete` return a stage,
   `Sidecars.complete` waits for it, `Complete` answers OK after the partition persisted the result (`UNAVAILABLE`
   otherwise - the sidecar sends it again, also to a restarted node). Closes the gap of D27.
@@ -395,3 +398,117 @@ partition. The rules of the pause below still hold, except the one about rejecte
   loses a node for good; every page must come and a host is fetched no more often than the crawl-delay (journal of
   the WireMock site). It replaces the in-JVM test of two memory instances planned before: one DNS name cannot point to
   two ports of the test JVM, so a sidecar could not reach both.
+
+## D31. Client gateway: results wait in the mailbox of a consumer
+
+- The entry points of clients (transports) are gateways: `task-grid-gateway-<transport>` libraries over `TaskQueue`.
+  A gateway does not know the application: the task (payload, meta) and the reply are made by a codec of the
+  application, as the body of a RabbitMQ message is `FetchRequest` while `reply_to` belongs to the transport.
+- A transport without a reply address (gRPC, REST) needs the result on another node than the one that took the task.
+  It waits in a mailbox (`Mailbox`, core): a box per consumer - client (an integration) + consumer (its instance,
+  stable across restarts, e.g. the ordinal of a pod); any node reaches any box (in memory - only the node itself,
+  so a gRPC gateway over memory boxes serves one node; the target is the cluster). Not a relay to the node of the
+  connection: a reconnect to another node, a restart of the client would lose results.
+- Limit per box: tasks submitted and not yet acknowledged. A fuse against a client that submits without taking its
+  results, not load balancing - so a plain API, no credits (unlike the workers, which scale under the load).
+  A full box refuses the submit.
+- Idempotent by the request id (`RequestId`: client, consumer, id - D32): a client retries a submit with the same id.
+  `reserve` tells the gateway what to do - a new request (submit; release the place if the submit fails), a pending
+  one (submit again, the queue keeps one request per id), done (the result waits in the box - do not submit again).
+- Delivery at least once: a subscription streams the results not yet acknowledged in the order they were put, then
+  the new ones, within the demand of the stream; an ack removes a result and frees its place. Not acknowledged -
+  sent again with the next subscription; a result put again after its ack (the result callback is retried) comes
+  again. A newer subscription of a box ends the older one.
+- One ttl for everything in a box: a reservation whose task never reached the queue (a node failed between reserve
+  and submit, the client did not retry), a result nobody takes, an abandoned box.
+
+## D32. One task for the same payload; results leave the queue before its end
+
+- The queue keeps the requests, the mailbox keeps the results: one copy of each. Before, the journal of a partition
+  had the payload in `Submitted` and again in every `Started`, the result in `Ended` (kept until delivered,
+  `Delivered` after it) and in the snapshots; a box would have been a second copy of the result.
+- A task is the work, a request is who asked. `TaskQueue.submit(Task, Request)`: `Request` = `RequestId` (client,
+  consumer, the id of the client - the key of idempotency and the address of the result) + tags of the requester (e.g.
+  the correlation id of AMQP). The id of a task is the hash of its payload (`Task.of`); the meta is not part of it -
+  the meta of the first request stays (it is of the work: kind, keys). The same payload while the task is in its
+  partition joins it (`Joined`): done once, the result goes to every request. The same request again changes nothing;
+  a request id with another task is an error. After the task finished the same payload is a new task: no cache of
+  results. A client that needs its own execution makes the payload differ.
+- Events: `Submitted(task, request)`, `Joined(taskId, request)`, `Started(taskId, attempt, deadline)` - no payload,
+  `Ended(taskId, attempt, finished, resumeAt)` - no result. A command of `Partition` returns a `Step`: the events and
+  the final result with its requests. The Pekko entity delivers that result to the `ResultCallback`s first - other
+  commands stashed, at most `delivery-timeout` - and persists the events only then. A failed delivery is decided
+  again: a result of a worker fails its `Complete` (the sidecar repeats it), a result of a deadline is decided again
+  by a tick after `redeliver-after`. A receiver that is down holds its partitions: backpressure instead of results
+  piling up in the journal.
+- `ResultStore` is gone. Waiting on the node that took the request (`POST /fetch`, AMQP `after-reply`) goes through
+  the mailbox: box (`rest` | `amqp`, `url-manager.node-id`), a new request id per wait; the node subscribes to its
+  boxes, hands a reply to the waiting request and acknowledges it at once. A wait reserves its place first:
+  `url-manager.box-limit` requests of a client in work per node - a business limit, whatever the transports; a
+  request that timed out keeps its place until its result is taken. A full box - `FetchOutcome.Busy`: 429 for REST,
+  `CODE_BUSY` for AMQP. AMQP `after-submit`: `RequestId(amqp-reply-to, reply_to, request_id)`, the correlation
+  id in the tags; the reply is published by its `ResultCallback`.
+
+## D33. gRPC gateway: unary submit, a stream of results, a stream of acks
+
+- `taskgrid.gateway.v1.TaskGateway` (`libs/task-grid-gateway-grpc`): `Submit` (unary) - `OK` once the request is in
+  the queue, `RESOURCE_EXHAUSTED` - the box is full, `INVALID_ARGUMENT` - refused by the application or the id is in
+  the queue with another payload, `UNAVAILABLE` - retry with the same id; `Subscribe` - a server stream of the results
+  of a box not acknowledged, then the new ones, a newer subscription ends the older one with `ABORTED`; `Ack` -
+  a client stream of request ids. No credits: the limit of a box is a fuse, a client that reads fast submits fast;
+  flow control of the stream is that of gRPC (the next result is taken from the box when the stream is ready).
+- The gateway knows no application: `TaskCodec` of the application makes the task of a payload (`Task.of` - the same
+  payload of several requests is one task) and the reply of a result. A reply may block (a large page from blob
+  storage): made on an executor of the gateway, one at a time per stream; an exception ends the stream, the result
+  comes again with the next subscription.
+- Which results go to the mailbox is marked on the request (tag `mailbox`, `MailboxSink.request`), not known to the
+  node of the request: the result finishes on the node of its partition, `MailboxSink` (registered on every node with
+  the queue) puts it into the box. The same for the waits of url-manager (`rest`, `amqp` boxes of its node); AMQP
+  `after-submit` requests are not marked - their callback publishes the reply.
+- url-manager: `FetchTaskCodec` - payloads are `FetchRequest` / `FetchReply` of `crawler.urlmanager.v1`, the same as
+  over RabbitMQ (`request_id` of the reply - the id of the gateway; `timeout_ms` is not used, the result waits in the
+  box); a page that cannot be read is `CODE_FAILED`. The gateway is on the gRPC server of the node (port 9090, next
+  to the sidecars), the boxes have the `box-limit` of url-manager. Only in memory mode for now: in a cluster the result
+  would reach the mailbox of another node - the mailbox on Pekko comes first. A large page is in the message: a
+  client sets its max inbound message size (gRPC: 4 MiB by default) up to the pages it expects.
+
+## D34. Mailbox on Pekko: a box is a sharded event-sourced entity
+
+- `task-grid-mailbox-pekko`: `PekkoMailbox` over `BoxEntity` (`task-grid-box`, entity id - `client/consumer`).
+  Events `Reserved`, `Released`, `Stored` (the result), `Acked`, `Expired`; the expiry is decided in the event. A box
+  with requests is a remembered entity and stays in memory: a timer at the earliest expiry persists `Expired`, also
+  after a restart of the cluster. An empty box without a subscriber passivates after `idle-timeout`; the event that
+  empties a box takes a snapshot of the empty state (events before it deleted): the journal of a long-lived box does
+  not grow.
+- The subscription is not persisted. A subscriber is an actor on its own node (`BoxSubscriber`, a `Flow.Subscriber`
+  bridge): it passes the demand to the box and the results to the subscriber. The box watches it (a node gone - the
+  subscription ends) and sends within its demand what this subscriber has not got. The box moved or restarted: it
+  does not know the subscriber - the next heartbeat (`heartbeat`, 5s) or demand gets `Unknown`, the subscriber
+  subscribes again with the demand not served, the box sends again what is not acknowledged (at least once). Another
+  subscriber has the box - the older one gets `Superseded`. On a stop of the box for a rebalance the subscriber is
+  told at once; not during the shutdown of the node (it would start the box again).
+- `task-grid-pekko-core`: the Jackson module for the types of the core (`Blob`), shared by the Pekko libraries
+  through reference.conf.
+- url-manager: `PekkoMailbox` in cluster mode, `MemoryMailbox` in memory mode; `after-reply` is no longer refused in
+  the cluster, `POST /fetch` and the gRPC gateway are on in both modes. `StandIT` (cluster): a gateway client submits
+  to one node and takes its results from another while a third node leaves.
+
+## D35. Gateways in core, transports in libraries; AMQP on amqp-client
+
+- `gateway` of task-grid-core: `Gateway` (reserve in the box, submit marked for the mailbox, `call` - wait on this
+  node through the box of the client and the node), `TaskCodec` of the application (task of a payload, reply of a
+  result, refusal: `INVALID`, `FAILED`, `TIMEOUT`, `BUSY`), `Call`, `Submission`. Core shows the whole way from a
+  client to a worker; the transports are libraries over it: `task-grid-gateway-grpc`, `task-grid-gateway-amqp`.
+- `task-grid-gateway-amqp` on `com.rabbitmq:amqp-client`, no Spring (libraries never depend on it): a consumer with
+  manual acknowledgement and prefetch, replies through the default exchange with publisher confirms, automatic
+  recovery; the queue is declared durable if absent. Both ways of D22 / D28: `after-reply` - `Gateway.call` with the
+  box `amqp` of the node, the request acknowledged after the confirmed reply; `after-submit` - `RequestId(
+  amqp-reply-to, reply_to, id)` with the correlation id in the tags, the reply published by its `ResultCallback`.
+- The id of a request is the hash of its message: a message delivered again is the same request, nothing else to
+  agree on with the clients. `FetchReply.request_id` is the id of the request on its transport (the correlation id
+  of the message, else the hash; the id of a gRPC request); `FetchRequest.request_id` and `timeout_ms` are not read -
+  an after-reply request waits `url-manager.default-timeout`. `POST /fetch` waits through the same `Gateway.call`, its
+  id - the hash of its task.
+- url-manager: `FetchTaskCodec` (`protocol`) for both transports, `RabbitRequests` - the Spring lifecycle of
+  `AmqpGateway` (stops first), its connection - a clone of the connection factory of Spring Boot
+  (`spring.rabbitmq.*`); prefetch - `url-manager.rabbit.prefetch`. Spring AMQP is left only for that factory.

@@ -16,7 +16,11 @@
     <modules>
         <module>libs/task-grid-core</module>
         <module>libs/task-grid-worker-remote</module>
+        <module>libs/task-grid-pekko-core</module>
         <module>libs/task-grid-queue-pekko</module>
+        <module>libs/task-grid-mailbox-pekko</module>
+        <module>libs/task-grid-gateway-grpc</module>
+        <module>libs/task-grid-gateway-amqp</module>
         <module>crawler-example</module>
     </modules>
 
@@ -33,6 +37,7 @@
         <protobuf.version>4.36.2</protobuf.version>
         <testcontainers.version>2.0.5</testcontainers.version>
         <zstd-jni.version>1.5.7-25</zstd-jni.version>
+        <amqp-client.version>5.30.0</amqp-client.version>
         <pekko.version>1.7.1</pekko.version>
         <scala.binary.version>2.13</scala.binary.version>
         <!-- the version Pekko is built with; other Scala libraries (pekko-persistence-cassandra) bring older ones -->
@@ -59,7 +64,27 @@
             </dependency>
             <dependency>
                 <groupId>io.github.deripas</groupId>
+                <artifactId>task-grid-pekko-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.deripas</groupId>
                 <artifactId>task-grid-queue-pekko</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.deripas</groupId>
+                <artifactId>task-grid-mailbox-pekko</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.deripas</groupId>
+                <artifactId>task-grid-gateway-grpc</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.deripas</groupId>
+                <artifactId>task-grid-gateway-amqp</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -124,6 +149,11 @@
                 <groupId>com.github.luben</groupId>
                 <artifactId>zstd-jni</artifactId>
                 <version>${zstd-jni.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.rabbitmq</groupId>
+                <artifactId>amqp-client</artifactId>
+                <version>${amqp-client.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

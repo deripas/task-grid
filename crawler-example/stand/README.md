@@ -6,7 +6,7 @@ RabbitMQ, SeaweedFS and a fake site. Two profiles, one at a time - the two ways 
 | | `memory` | `cluster` |
 |---|---|---|
 | url-manager | 3 instances, tasks in memory of each | 3 nodes of a Pekko cluster (every node a seed node, SBR keep-majority) |
-| Requests | queue `url-manager.fetch.N` per instance, `ack: after-reply` | one queue `url-manager.fetch`, `ack: after-submit` |
+| Requests | queue `url-manager.fetch.N` per instance, `ack: after-reply` | one queue `url-manager.fetch`, `ack: after-submit`; also the gRPC gateway of any node |
 | Crawl-delay | per instance: a host always lands on the same queue | across the cluster: a host is one partition |
 | A stopped instance | its unacknowledged requests wait in its queue until it is back | its partitions move to the other nodes with the journal |
 | Extra | - | ScyllaDB (1 node) and `scylla-init` applying `url-manager/cql/schema.cql` |
@@ -43,7 +43,8 @@ The images copy the build output (`url-manager/target/url-manager.jar`, `fetcher
 profile `stand`, not part of `make it`). 41 requests over five hosts; after the first replies:
 
 - `memory` - the instance whose queue has the most messages is restarted;
-- `cluster` - `url-manager-cluster-2` is stopped for good.
+- `cluster` - `url-manager-cluster-2` is stopped for good; a client of the gRPC gateway (`taskgrid.gateway.v1`, port
+  9090 of the nodes) submits to `url-manager-cluster-1` and takes its results from `url-manager-cluster-3`.
 
 Then every request must get its page (the large one through blob storage) and two requests of a host must be at
 least the crawl-delay apart in the journal of the site.

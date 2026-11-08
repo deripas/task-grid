@@ -6,9 +6,10 @@ import io.github.deripas.taskgrid.queue.TaskQueue;
 import io.github.deripas.taskgrid.queue.partition.Partition;
 import io.github.deripas.taskgrid.queue.partition.PartitionEvent;
 import io.github.deripas.taskgrid.queue.partition.PartitionSnapshot;
+import io.github.deripas.taskgrid.queue.partition.Step;
 import io.github.deripas.taskgrid.task.AttemptResult;
+import io.github.deripas.taskgrid.task.Request;
 import io.github.deripas.taskgrid.task.Task;
-import io.github.deripas.taskgrid.task.TaskResult;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.pekko.Done;
 import org.apache.pekko.actor.typed.ActorRef;
@@ -32,22 +33,25 @@ import org.apache.pekko.persistence.typed.javadsl.RetentionCriteria;
 import org.apache.pekko.persistence.typed.javadsl.SignalHandler;
 
 import java.time.Duration;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.TimeUnit;
 
 /**
  * A partition of the queue in the cluster: a sharded event-sourced entity per partition key, running the
  * {@link Partition} state machine. Events are persisted before anyone hears of them; then the attempts go to the
- * receivers of this node and the final results are delivered - again and again until all receivers succeed
- * ({@code Delivered} is persisted then).
+ * receivers of this node.
  * <ul>
+ *   <li>A final result is not persisted: the entity delivers it to the receivers of this node first, with the other
+ *   commands stashed, and persists the end of the task only once all of them succeeded. A delivery that failed
+ *   decides again: the result of a worker fails its {@code Complete} (the worker repeats it), the result of a deadline
+ *   is decided again by a tick after {@code redeliver-after}. A receiver that is down holds its partitions.</li>
  *   <li>Timers: the deadline of the attempt in progress and the end of the pause ({@link Partition#nextDeadline}).</li>
  *   <li>Recovery: from the last snapshot and the events after it; then a tick (deadlines that passed while the entity
- *   was down) and the delivery of results not delivered yet. An attempt in progress is not handed out again: its
- *   result may still come, on any node; otherwise its deadline retries it.</li>
- *   <li>Passivation: an empty entity (nothing waiting, in progress or to deliver) stays for {@code idle-timeout}, then
+ *   was down). An attempt in progress is not handed out again: its result may still come, on any node; otherwise its
+ *   deadline retries it.</li>
+ *   <li>Passivation: an empty entity (nothing waiting or in progress) stays for {@code idle-timeout}, then
  *   stops itself if still empty and its pause is over. A key whose tasks come seldom but more often than that is not
  *   recovered from the journal for each of them, and its pause is known from memory; once it is gone, the pause is
  *   surely over and the next task may start at once. The value is a matter of cost, not of politeness: the entity
@@ -69,37 +73,36 @@ final class PartitionEntity extends EventSourcedBehavior<PartitionEntity.Command
     }
 
     /**
-     * Replies {@link StatusReply#ack()} once the task is persisted (or was there already), an error if its id is taken
-     * by another payload.
+     * Replies {@link StatusReply#ack()} once the request is persisted (or was there already), an error if the id of
+     * the task is taken by another payload or the request is there with another task.
      */
     record Submit(
         Task task,
+        Request request,
         ActorRef<StatusReply<Done>> replyTo
     ) implements Command {
     }
 
     /**
-     * Replies once the result is persisted, or at once if the attempt is not in progress (it is ignored).
+     * Replies once the result is taken: a final one - delivered and its end persisted, an error if the delivery
+     * failed; at once if the attempt is not in progress (it is ignored).
      */
     record Complete(
         AttemptResult result,
-        ActorRef<Done> replyTo
+        ActorRef<StatusReply<Done>> replyTo
     ) implements Command {
     }
 
     record Tick() implements Command {
     }
 
-    record Delivered(String taskId) implements Command {
+    /**
+     * The final result of the {@link #pending} step reached all the receivers.
+     */
+    record Delivered() implements Command {
     }
 
-    record NotDelivered(
-        String taskId,
-        String error
-    ) implements Command {
-    }
-
-    record Redeliver() implements Command {
+    record NotDelivered(String error) implements Command {
     }
 
     /**
@@ -124,14 +127,16 @@ final class PartitionEntity extends EventSourcedBehavior<PartitionEntity.Command
     /**
      * What the entities of this node share.
      *
-     * @param redeliverAfter pause before delivering a result again after a failed delivery
-     * @param snapshotEvery  events between snapshots
-     * @param idleTimeout    an empty entity stays this long before it passivates
+     * @param redeliverAfter  pause before deciding a result of a deadline again after a failed delivery
+     * @param deliveryTimeout a delivery of a final result not done this long has failed
+     * @param snapshotEvery   events between snapshots
+     * @param idleTimeout     an empty entity stays this long before it passivates
      */
     record Settings(
         QueueSettings queue,
         DelayPolicy delay,
         Duration redeliverAfter,
+        Duration deliveryTimeout,
         int snapshotEvery,
         Duration idleTimeout
     ) {
@@ -139,7 +144,10 @@ final class PartitionEntity extends EventSourcedBehavior<PartitionEntity.Command
 
     private static final String TICK = "tick";
     private static final String IDLE = "idle";
-    private static final String REDELIVER = "redeliver";
+    /**
+     * A tick after a failed delivery of the result of a deadline; apart from {@link #TICK}, which follows the deadline.
+     */
+    private static final String REDECIDE = "redecide";
     private static final String KEY_PREFIX = "k:";
     private static final String TASK_PREFIX = "t:";
 
@@ -154,9 +162,10 @@ final class PartitionEntity extends EventSourcedBehavior<PartitionEntity.Command
      */
     private final String key;
     /**
-     * Results being delivered now: not started again until they complete.
+     * The step whose final result is being delivered: its events are persisted after the delivery, other commands
+     * wait in the stash; {@code null} - none.
      */
-    private final Set<String> delivering = new HashSet<>();
+    private Pending pending;
     /**
      * Passivation is requested: the next stop is the answer to it.
      */
@@ -213,18 +222,14 @@ final class PartitionEntity extends EventSourcedBehavior<PartitionEntity.Command
     public CommandHandler<Command, Object, Partition> commandHandler() {
         return newCommandHandlerBuilder()
             .forAnyState()
-            .onCommand(Submit.class, this::submit)
-            .onCommand(Complete.class, (state, c) -> persist(state.completed(c.result(), now()))
-                .thenReply(c.replyTo(), s -> Done.getInstance()))
-            .onCommand(Tick.class, (state, t) -> persist(state.tick(now())))
             .onCommand(Delivered.class, this::delivered)
             .onCommand(NotDelivered.class, this::notDelivered)
-            .onCommand(Redeliver.class, (state, r) -> {
-                deliverAll(state);
-                return Effect().none();
-            })
-            .onCommand(Idle.class, this::idle)
             .onCommand(Stop.class, this::stop)
+            .onCommand(c -> pending != null, (state, c) -> Effect().stash())
+            .onCommand(Submit.class, this::submit)
+            .onCommand(Complete.class, (state, c) -> run(state.completed(c.result(), now()), c.replyTo()))
+            .onCommand(Tick.class, (state, t) -> run(state.tick(now()), null))
+            .onCommand(Idle.class, this::idle)
             .build();
     }
 
@@ -261,7 +266,6 @@ final class PartitionEntity extends EventSourcedBehavior<PartitionEntity.Command
                     settle(state);
                 } else {
                     context.getSelf().tell(new Tick());
-                    deliverAll(state);
                 }
             })
             .build();
@@ -293,7 +297,7 @@ final class PartitionEntity extends EventSourcedBehavior<PartitionEntity.Command
     private Effect<Object, Partition> submit(Partition state, Submit submit) {
         final List<PartitionEvent> events;
         try {
-            events = state.submit(submit.task(), now());
+            events = state.submit(submit.task(), submit.request(), now());
         } catch (IllegalArgumentException e) {
             return Effect().reply(submit.replyTo(), StatusReply.error(e.getMessage()));
         }
@@ -305,7 +309,7 @@ final class PartitionEntity extends EventSourcedBehavior<PartitionEntity.Command
      */
     private Effect<Object, Partition> idle(Partition state, Idle idle) {
         final long now = now();
-        if (!state.isEmpty() || !delivering.isEmpty() || passivating) {
+        if (!state.isEmpty() || passivating) {
             return Effect().none();
         }
         if (!state.isIdle(now)) {
@@ -330,24 +334,66 @@ final class PartitionEntity extends EventSourcedBehavior<PartitionEntity.Command
      */
     private Effect<Object, Partition> stop(Partition state, Stop stop) {
         final boolean stopping = CoordinatedShutdown.get(context.getSystem()).getShutdownReason().isPresent();
-        if (passivating && !stopping && (!state.isIdle(now()) || !delivering.isEmpty())) {
+        if (passivating && !stopping && !state.isIdle(now())) {
             log.debug("Work came while passivating, starting again: key={}", key);
             ClusterSharding.get(context.getSystem()).entityRefFor(TYPE_KEY, entityId).tell(new Tick());
         }
         return Effect().stop();
     }
 
+    /**
+     * A step without a final result is persisted at once; with one - the result goes to the receivers first.
+     *
+     * @param replyTo of the {@link Complete} that decided the step, {@code null} - of a tick
+     */
+    private Effect<Object, Partition> run(Step step, ActorRef<StatusReply<Done>> replyTo) {
+        if (step.finished() == null) {
+            final EffectBuilder<Object, Partition> effect = persist(step.events());
+            return replyTo == null
+                ? effect
+                : effect.thenReply(replyTo, s -> StatusReply.ack());
+        }
+        pending = new Pending(step, replyTo);
+        final Step.Finished finished = step.finished();
+        final CompletionStage<Void> delivery = receivers.deliver(finished.result(), finished.requests())
+            .toCompletableFuture()
+            .orTimeout(settings.deliveryTimeout().toMillis(), TimeUnit.MILLISECONDS);
+        context.pipeToSelf(delivery, (ignored, error) -> error == null
+            ? new Delivered()
+            : new NotDelivered(String.valueOf(error)));
+        timers.cancel(IDLE);
+        return Effect().none();
+    }
+
     private Effect<Object, Partition> delivered(Partition state, Delivered delivered) {
-        delivering.remove(delivered.taskId());
-        return persist(state.delivered(delivered.taskId()));
+        final Pending done = pending;
+        if (done == null) {
+            return Effect().none();
+        }
+        pending = null;
+        final EffectBuilder<Object, Partition> persisted = persist(done.step().events());
+        final EffectBuilder<Object, Partition> effect = done.replyTo() == null
+            ? persisted
+            : persisted.thenRun(s -> done.replyTo().tell(StatusReply.ack()));
+        return effect.thenUnstashAll();
     }
 
     private Effect<Object, Partition> notDelivered(Partition state, NotDelivered failed) {
-        delivering.remove(failed.taskId());
-        log.warn("Result not delivered, again in {}: key={} task={} error={}",
-            settings.redeliverAfter(), key, failed.taskId(), failed.error());
-        timers.startSingleTimer(REDELIVER, new Redeliver(), settings.redeliverAfter());
-        return Effect().none();
+        final Pending done = pending;
+        if (done == null) {
+            return Effect().none();
+        }
+        pending = null;
+        final String taskId = done.step().finished().result().taskId();
+        if (done.replyTo() != null) {
+            log.warn("Result not delivered, the worker repeats it: key={} task={} error={}", key, taskId, failed.error());
+            done.replyTo().tell(StatusReply.error("result not delivered: " + failed.error()));
+        } else {
+            log.warn("Result not delivered, decided again in {}: key={} task={} error={}",
+                settings.redeliverAfter(), key, taskId, failed.error());
+            timers.startSingleTimer(REDECIDE, new Tick(), settings.redeliverAfter());
+        }
+        return Effect().unstashAll();
     }
 
     /**
@@ -360,8 +406,7 @@ final class PartitionEntity extends EventSourcedBehavior<PartitionEntity.Command
         return Effect().persist(List.<Object>copyOf(events)).thenRun(state -> {
             for (PartitionEvent event : events) {
                 switch (event) {
-                    case PartitionEvent.Started started -> receivers.ready(started.attempt());
-                    case PartitionEvent.Ended ended when ended.result() != null -> deliver(ended.result());
+                    case PartitionEvent.Started started -> receivers.ready(state.attempt(started));
                     default -> {
                     }
                 }
@@ -381,24 +426,11 @@ final class PartitionEntity extends EventSourcedBehavior<PartitionEntity.Command
         } else {
             timers.cancel(TICK);
         }
-        if (!state.isEmpty() || !delivering.isEmpty()) {
+        if (!state.isEmpty() || pending != null) {
             timers.cancel(IDLE);
         } else if (!timers.isTimerActive(IDLE)) {
             timers.startSingleTimer(IDLE, new Idle(), settings.idleTimeout());
         }
-    }
-
-    private void deliverAll(Partition state) {
-        state.undelivered().forEach(this::deliver);
-    }
-
-    private void deliver(TaskResult result) {
-        if (!delivering.add(result.taskId())) {
-            return;
-        }
-        context.pipeToSelf(receivers.deliver(result), (ignored, error) -> error == null
-            ? new Delivered(result.taskId())
-            : new NotDelivered(result.taskId(), String.valueOf(error)));
     }
 
     private static String keyOf(String entityId) {
@@ -409,5 +441,14 @@ final class PartitionEntity extends EventSourcedBehavior<PartitionEntity.Command
 
     private static long now() {
         return System.currentTimeMillis();
+    }
+
+    /**
+     * A step waiting for the delivery of its final result.
+     */
+    private record Pending(
+        Step step,
+        ActorRef<StatusReply<Done>> replyTo
+    ) {
     }
 }

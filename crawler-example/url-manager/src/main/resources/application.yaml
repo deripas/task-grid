@@ -7,14 +7,6 @@ spring:
   mvc:
     problemdetails:
       enabled: true
-  rabbitmq:
-    # replies are confirmed before a request is acknowledged
-    publisher-confirm-type: correlated
-    listener:
-      simple:
-        acknowledge-mode: manual
-        # requests in work at once per instance, including those waiting for the crawl-delay of their host
-        prefetch: 1000
 
 server:
   port: 8080
@@ -30,6 +22,8 @@ management:
 url-manager:
   # memory - tasks in this process; cluster - in the Pekko cluster of url-managers, journal in ScyllaDB
   queue: memory
+  # the consumer of the boxes of this node in the mailbox; unique among the nodes (the container or pod name)
+  node-id: ${HOSTNAME:url-manager}
   cluster:
     host: ${PEKKO_HOST:127.0.0.1}
     port: ${PEKKO_PORT:25520}
@@ -50,6 +44,8 @@ url-manager:
   # a hung or lost attempt is retried after this; above max-timeout
   attempt-timeout: 15m
   crawl-delay: 1s
+  # requests of a client (rest, amqp after-reply) in work at once on this node
+  box-limit: 1000
   result-ttl: 1m
   shutdown-timeout: 5s
   blob:
@@ -61,3 +57,5 @@ url-manager:
     enabled: false
     queue: url-manager.fetch
     ack: after-reply
+    # requests in work at once per instance, including those waiting for the crawl-delay of their host
+    prefetch: 1000

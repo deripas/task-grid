@@ -1,7 +1,8 @@
 package io.github.deripas.crawler.urlmanager.fetch;
 
+import io.github.deripas.taskgrid.gateway.Call;
+import io.github.deripas.taskgrid.gateway.Gateway;
 import io.github.deripas.taskgrid.queue.TaskQueue;
-import io.github.deripas.taskgrid.result.ResultStore;
 import io.github.deripas.taskgrid.task.Blob;
 import io.github.deripas.taskgrid.task.Task;
 import io.github.deripas.taskgrid.task.TaskResult;
@@ -15,16 +16,12 @@ import java.io.InputStream;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Optional;
-import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionStage;
 
 /**
- * Fetch of one page as a task of task-grid: kind {@value #KIND}, partition key - the host, so fetches of a host run
+ * Fetch of one page as a task of task-grid: kind {@value #KIND}, the payload is the request to the fetcher, so the
+ * same page asked for by several clients at once is fetched once; partition key - the host, so fetches of a host run
  * one at a time, in order, with a pause; affinity key - the host too, so they go to the same fetcher (its connections
- * to the site stay warm). The result is either waited for here, within the timeout of the client, or delivered
- * to a {@link FetchCallback} on the node where the task finished, together with the tags given on submit.
+ * to the site stay warm).
  */
 @Slf4j
 @RequiredArgsConstructor
@@ -34,74 +31,53 @@ public final class FetchService {
      */
     public static final String KIND = "fetch";
 
-    /**
-     * Prefix of the tags in the task meta: they stay apart from the keys of task-grid.
-     */
-    private static final String TAG = "tag.";
-
-    private final TaskQueue queue;
-    private final ResultStore results;
+    private final Gateway gateway;
     private final PageCodec codec;
     private final BlobReader blobs;
 
     /**
-     * Submits a fetch with a new id and waits for its page.
+     * Fetches the page for a client waiting on this node: its box of this node holds the request until the result
+     * is taken, a full box - {@link FetchOutcome.Busy}. The request is the page: the same page asked for again while
+     * it is fetched is the same request.
+     *
+     * @param client the box of the client on this node
      */
-    public FetchOutcome fetch(PageUrl url, Duration timeout) throws IOException {
-        final String id = UUID.randomUUID().toString();
-        submit(id, url, Map.of());
-        return result(id, url, timeout);
+    public FetchOutcome fetch(
+        String client,
+        PageUrl url,
+        Duration timeout
+    ) throws IOException {
+        final Task task = task(url);
+        return switch (gateway.call(client, task.id(), task, timeout).toCompletableFuture().join()) {
+            case Call.Done done -> outcome(done.result());
+            case Call.TimedOut ignored -> {
+                log.info("Fetch timed out: client={} url={} timeout={}", client, url.uri(), timeout);
+                yield new FetchOutcome.TimedOut();
+            }
+            case Call.Busy ignored -> {
+                log.info("Fetch refused, the box is full: client={} url={}", client, url.uri());
+                yield new FetchOutcome.Busy();
+            }
+            case Call.Rejected rejected -> new FetchOutcome.Failed(rejected.reason());
+        };
     }
 
     /**
-     * Queues the fetch; returns when the queue has taken it. The same id while its task is still queued is the same
-     * fetch (a request delivered again): it is not queued twice.
-     *
-     * @param tags small strings that travel with the task to its {@link FinishedFetch}, e.g. the reply address
+     * The task of a fetch: the same URL is the same task while it is queued.
      */
-    public void submit(
-        String id,
-        PageUrl url,
-        Map<String, String> tags
-    ) {
+    public Task task(PageUrl url) {
         final Map<String, String> meta = new HashMap<>();
-        tags.forEach((key, value) -> meta.put(TAG + key, value));
         meta.put(Worker.KIND, KIND);
         // one fetch of a host at a time, with its crawl-delay; on the same fetcher instance: warm connections
         meta.put(TaskQueue.PARTITION_KEY, url.host());
         meta.put(Worker.AFFINITY_KEY, url.host());
-        queue.submit(new Task(id, Blob.of(codec.request(url)), meta)).toCompletableFuture().join();
+        return Task.of(Blob.of(codec.request(url)), meta);
     }
 
     /**
-     * Waits for the result of a submitted fetch.
+     * The outcome of a finished fetch: a page may be read from blob storage, so it blocks; the page must be closed.
      */
-    public FetchOutcome result(
-        String id,
-        PageUrl url,
-        Duration timeout
-    ) throws IOException {
-        final Optional<TaskResult> result = results.await(id, timeout).toCompletableFuture().join();
-        if (result.isEmpty()) {
-            log.info("Fetch timed out: task={} url={} timeout={}", id, url.uri(), timeout);
-            return new FetchOutcome.TimedOut();
-        }
-        return outcome(result.get());
-    }
-
-    /**
-     * Registers a receiver of every finished fetch; see {@link FetchCallback} for the threads and the delivery.
-     */
-    public void onFinished(FetchCallback callback) {
-        queue.onResult(result -> {
-            if (!KIND.equals(result.meta().get(Worker.KIND))) {
-                return CompletableFuture.completedFuture(null);
-            }
-            return callback.finished(new FinishedFetch(result.taskId(), tags(result.meta()), () -> outcome(result)));
-        });
-    }
-
-    private FetchOutcome outcome(TaskResult result) throws IOException {
+    public FetchOutcome outcome(TaskResult result) throws IOException {
         return switch (result.status()) {
             case DONE -> new FetchOutcome.Fetched(codec.page(open(result.body())));
             case FAILED -> {
@@ -116,15 +92,5 @@ public final class FetchService {
             case Blob.Inline inline -> new ByteArrayInputStream(inline.bytes());
             case Blob.Ref ref -> blobs.open(ref);
         };
-    }
-
-    private static Map<String, String> tags(Map<String, String> meta) {
-        final Map<String, String> tags = new HashMap<>();
-        meta.forEach((key, value) -> {
-            if (key.startsWith(TAG)) {
-                tags.put(key.substring(TAG.length()), value);
-            }
-        });
-        return tags;
     }
 }

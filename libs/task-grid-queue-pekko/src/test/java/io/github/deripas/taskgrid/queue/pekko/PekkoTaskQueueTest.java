@@ -7,10 +7,11 @@ import io.github.deripas.taskgrid.queue.DelayPolicy;
 import io.github.deripas.taskgrid.queue.QueueSettings;
 import io.github.deripas.taskgrid.queue.TaskQueue;
 import io.github.deripas.taskgrid.queue.partition.PartitionSnapshot;
-import io.github.deripas.taskgrid.result.memory.MemoryResultStore;
 import io.github.deripas.taskgrid.task.Attempt;
 import io.github.deripas.taskgrid.task.AttemptResult;
 import io.github.deripas.taskgrid.task.Blob;
+import io.github.deripas.taskgrid.task.Request;
+import io.github.deripas.taskgrid.task.RequestId;
 import io.github.deripas.taskgrid.task.Task;
 import io.github.deripas.taskgrid.task.TaskResult;
 import io.github.deripas.taskgrid.task.TaskStatus;
@@ -33,7 +34,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
-import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -49,7 +49,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -68,7 +67,7 @@ class PekkoTaskQueueTest {
     private static final Duration WAIT = Duration.ofSeconds(10);
     private static final Duration IDLE = Duration.ofSeconds(1);
 
-    private final MemoryResultStore results = new MemoryResultStore(Duration.ofMinutes(1), Clock.systemUTC());
+    private final Map<String, CompletableFuture<TaskResult>> results = new ConcurrentHashMap<>();
     private final BlockingQueue<Attempt> ready = new LinkedBlockingQueue<>();
     private ActorTestKit testKit;
     private PekkoTaskQueue queue;
@@ -105,32 +104,68 @@ class PekkoTaskQueueTest {
         submit(task("t", "a.com"));
 
         final CompletionException error = assertThrows(CompletionException.class, () -> queue.submit(
-            new Task("t", Blob.of(new byte[]{9}), Map.of(TaskQueue.PARTITION_KEY, "a.com"))).toCompletableFuture().join());
+            new Task("t", Blob.of(new byte[]{9}), Map.of(TaskQueue.PARTITION_KEY, "a.com")), request("x")).toCompletableFuture().join());
         assertInstanceOf(IllegalArgumentException.class, error.getCause());
     }
 
     /**
-     * A receiver fails: the result is delivered again until it succeeds; the result store has it from the first time.
+     * Requests of the same task in the partition: one attempt, the result to each of them.
      */
     @Test
-    void finalResultIsDeliveredAgainUntilTheCallbackSucceeds() throws InterruptedException {
+    void requestsOfTheSameTaskAreDoneOnce() throws InterruptedException {
+        start(new QueueSettings(3, Duration.ofMinutes(1)), DelayPolicy.NONE);
+        final Task task = Task.of(Blob.of(new byte[]{7}), Map.of(TaskQueue.PARTITION_KEY, "a.com"));
+        queue.submit(task, request("r1")).toCompletableFuture().join();
+        queue.submit(task, request("r2")).toCompletableFuture().join();
+
+        queue.complete(AttemptResult.done(take(), Blob.of(new byte[0]))).toCompletableFuture().join();
+        assertTrue(ready.poll(200, TimeUnit.MILLISECONDS) == null, "one attempt");
+        assertEquals(result("r1"), result("r2"));
+    }
+
+    /**
+     * A receiver fails: the final result is not taken - the worker repeats it until the delivery succeeds.
+     */
+    @Test
+    void completeFailsUntilTheResultIsDelivered() throws InterruptedException {
         start(new QueueSettings(3, Duration.ofMinutes(1)), DelayPolicy.NONE);
         final AtomicInteger calls = new AtomicInteger();
-        final BlockingQueue<TaskResult> delivered = new LinkedBlockingQueue<>();
-        queue.onResult(result -> {
+        queue.onResult((result, requests) -> calls.incrementAndGet() < 3
+            ? CompletableFuture.failedFuture(new IllegalStateException("broker is down"))
+            : CompletableFuture.completedFuture(null));
+        submit(task("t", null));
+        final AttemptResult done = AttemptResult.done(take(), Blob.of(new byte[0]));
+
+        assertThrows(CompletionException.class, () -> queue.complete(done).toCompletableFuture().join());
+        assertThrows(CompletionException.class, () -> queue.complete(done).toCompletableFuture().join());
+        queue.complete(done).toCompletableFuture().join();
+
+        assertEquals(3, calls.get());
+        assertEquals(TaskStatus.DONE, result("t").status());
+        queue.complete(done).toCompletableFuture().join();
+        assertEquals(3, calls.get(), "a repeated result of a finished task is ignored");
+    }
+
+    /**
+     * Attempts exhausted by the deadline while the receiver is down: the failure is decided again until delivered.
+     */
+    @Test
+    void resultOfADeadlineIsDecidedAgainUntilDelivered() throws InterruptedException {
+        start(new QueueSettings(1, Duration.ofMillis(300)), DelayPolicy.NONE);
+        final AtomicInteger calls = new AtomicInteger();
+        final CompletableFuture<TaskResult> delivered = new CompletableFuture<>();
+        queue.onResult((result, requests) -> {
             if (calls.incrementAndGet() < 3) {
                 return CompletableFuture.failedFuture(new IllegalStateException("broker is down"));
             }
-            delivered.add(result);
+            delivered.complete(result);
             return CompletableFuture.completedFuture(null);
         });
-        submit(task("t", null));
-        queue.complete(AttemptResult.done(take(), Blob.of(new byte[0])));
+        submit(task("t", "a.com"));
 
-        final TaskResult result = delivered.poll(WAIT.toSeconds(), TimeUnit.SECONDS);
-        assertNotNull(result);
-        assertEquals("t", result.taskId());
-        assertEquals(3, calls.get());
+        assertEquals(TaskStatus.FAILED, delivered.orTimeout(WAIT.toMillis(), TimeUnit.MILLISECONDS).join().status());
+        Thread.sleep(300);
+        assertEquals(3, calls.get(), "delivered once it succeeded");
     }
 
     /**
@@ -147,21 +182,11 @@ class PekkoTaskQueueTest {
 
     /**
      * The entity stops (its node is gone, a rebalance) and recovers from the journal and snapshots: the attempt in
-     * progress is not handed out again and takes its result; the pause and the waiting tasks survive; an undelivered
-     * result is delivered after the recovery.
+     * progress is not handed out again and takes its result; the pause, the waiting tasks and their requests survive.
      */
     @Test
     void stateSurvivesARestartOfThePartition() throws InterruptedException {
         start(new QueueSettings(3, Duration.ofMinutes(1)), DelayPolicy.fixed(PAUSE));
-        final AtomicBoolean receiverUp = new AtomicBoolean();
-        final BlockingQueue<TaskResult> delivered = new LinkedBlockingQueue<>();
-        queue.onResult(result -> {
-            if (!receiverUp.get()) {
-                return CompletableFuture.failedFuture(new IllegalStateException("down"));
-            }
-            delivered.add(result);
-            return CompletableFuture.completedFuture(null);
-        });
         for (int i = 1; i <= 5; i++) {
             submit(task("a" + i, "a.com"));
         }
@@ -170,15 +195,13 @@ class PekkoTaskQueueTest {
         assertTrue(ready.poll(500, TimeUnit.MILLISECONDS) == null, "the attempt in progress is not handed out again");
 
         queue.complete(AttemptResult.done(a1, Blob.of(new byte[]{1})));
+        assertEquals(TaskStatus.DONE, result("a1").status());
         final Attempt a2 = take();
         assertEquals("a2", a2.task().id());
 
         restart("a.com");
-        receiverUp.set(true);
-        final TaskResult result = delivered.poll(WAIT.toSeconds(), TimeUnit.SECONDS);
-        assertNotNull(result, "the undelivered result after the restart");
-        assertEquals("a1", result.taskId());
         queue.complete(AttemptResult.done(a2, Blob.of(new byte[]{2})));
+        assertEquals(TaskStatus.DONE, result("a2").status());
         assertEquals("a3", take().task().id());
     }
 
@@ -204,7 +227,7 @@ class PekkoTaskQueueTest {
         // the empty state is the last snapshot: the next recovery reads only it
         final List<Pair<SnapshotMeta, Object>> snapshots = SnapshotTestKit.create(testKit.system())
             .persistedInStorage(PersistenceId.of(PartitionEntity.TYPE_KEY.name(), entity).id());
-        assertEquals(new PartitionSnapshot(List.of(), null, false, 0, snapshotOf(snapshots).resumeAt(), List.of()),
+        assertEquals(new PartitionSnapshot(List.of(), null, 0, false, 0, snapshotOf(snapshots).resumeAt()),
             snapshotOf(snapshots));
 
         submit(task("a2", "a.com"));
@@ -218,7 +241,7 @@ class PekkoTaskQueueTest {
     }
 
     /**
-     * The whole flow with a worker: tasks of a key in order, keys in parallel, all results in the store.
+     * The whole flow with a worker: tasks of a key in order, keys in parallel, all results back.
      */
     @Test
     void tasksGoThroughTheDispatcherToTheWorkerAndBack() {
@@ -252,8 +275,12 @@ class PekkoTaskQueueTest {
 
     private void start(QueueSettings settings, DelayPolicy delay) {
         testKit = ActorTestKit.create("queue", config());
-        queue = PekkoTaskQueue.start(testKit.system(), settings, delay, results);
+        queue = PekkoTaskQueue.start(testKit.system(), settings, delay);
         queue.onReady(ready::add);
+        queue.onResult((result, requests) -> {
+            requests.forEach(request -> future(request.id().id()).complete(result));
+            return CompletableFuture.completedFuture(null);
+        });
         final Cluster cluster = Cluster.get(testKit.system());
         cluster.manager().tell(Join.create(cluster.selfMember().address()));
     }
@@ -277,7 +304,7 @@ class PekkoTaskQueueTest {
     }
 
     private void submit(Task task) {
-        queue.submit(task).toCompletableFuture().join();
+        queue.submit(task, request(task.id())).toCompletableFuture().join();
     }
 
     private Attempt take() throws InterruptedException {
@@ -286,9 +313,19 @@ class PekkoTaskQueueTest {
         return attempt;
     }
 
+    /**
+     * The result for the request with the id.
+     */
     private TaskResult result(String id) {
-        return results.await(id, WAIT).toCompletableFuture().join()
-            .orElseThrow(() -> new AssertionError("no result for " + id));
+        return future(id).orTimeout(WAIT.toMillis(), TimeUnit.MILLISECONDS).join();
+    }
+
+    private CompletableFuture<TaskResult> future(String requestId) {
+        return results.computeIfAbsent(requestId, id -> new CompletableFuture<>());
+    }
+
+    private static Request request(String id) {
+        return Request.of(new RequestId("test", "0", id));
     }
 
     private static Task task(String id, String key) {

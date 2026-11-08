@@ -7,11 +7,11 @@ import io.github.deripas.taskgrid.queue.ResultCallback;
 import io.github.deripas.taskgrid.queue.TaskQueue;
 import io.github.deripas.taskgrid.queue.partition.Partition;
 import io.github.deripas.taskgrid.queue.partition.PartitionEvent;
-import io.github.deripas.taskgrid.result.ResultStore;
+import io.github.deripas.taskgrid.queue.partition.Step;
 import io.github.deripas.taskgrid.task.Attempt;
 import io.github.deripas.taskgrid.task.AttemptResult;
+import io.github.deripas.taskgrid.task.Request;
 import io.github.deripas.taskgrid.task.Task;
-import io.github.deripas.taskgrid.task.TaskResult;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Clock;
@@ -33,14 +33,13 @@ import java.util.concurrent.TimeUnit;
  * Task queue of a single node, in memory: a {@link Partition} per partition key, all of them under one lock; events
  * are applied at once. A task without a partition key gets a partition of its own, without pauses. Pauses and
  * deadlines of attempts end on a timer of its own thread. Queued tasks are lost when the process stops; a final
- * result is delivered once.
+ * result is delivered once, after the task left the queue.
  */
 @Slf4j
 public final class MemoryTaskQueue implements TaskQueue, AutoCloseable {
     private final Object lock = new Object();
     private final QueueSettings settings;
     private final DelayPolicy delay;
-    private final ResultStore results;
     private final Clock clock = Clock.systemUTC();
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(
         Thread.ofPlatform().name("memory-task-queue").daemon().factory());
@@ -52,22 +51,13 @@ public final class MemoryTaskQueue implements TaskQueue, AutoCloseable {
     private final List<ReadyCallback> ready = new CopyOnWriteArrayList<>();
     private final List<ResultCallback> callbacks = new CopyOnWriteArrayList<>();
 
-    public MemoryTaskQueue(
-        QueueSettings settings,
-        DelayPolicy delay,
-        ResultStore results
-    ) {
+    public MemoryTaskQueue(QueueSettings settings, DelayPolicy delay) {
         this.settings = settings;
         this.delay = delay;
-        this.results = results;
     }
 
-    /**
-     * A task whose id is still in the queue is not queued again: the same payload (by hash) is a retried submission
-     * and succeeds, another payload fails with {@link IllegalArgumentException}.
-     */
     @Override
-    public CompletionStage<Void> submit(Task task) {
+    public CompletionStage<Void> submit(Task task, Request request) {
         final Effects effects;
         synchronized (lock) {
             final String partitionKey = task.meta().get(PARTITION_KEY);
@@ -77,13 +67,13 @@ public final class MemoryTaskQueue implements TaskQueue, AutoCloseable {
             final Entry entry = partitions.computeIfAbsent(key, k -> new Entry(k, new Partition(partitionKey, settings, delay)));
             final List<PartitionEvent> events;
             try {
-                events = entry.partition.submit(task, now());
+                events = entry.partition.submit(task, request, now());
             } catch (IllegalArgumentException e) {
                 dropIfIdle(entry);
                 return CompletableFuture.failedFuture(e);
             }
             keyById.put(task.id(), key);
-            effects = run(entry, events);
+            effects = run(entry, new Step(events, null));
         }
         effects.carryOut();
         return CompletableFuture.completedFuture(null);
@@ -145,23 +135,19 @@ public final class MemoryTaskQueue implements TaskQueue, AutoCloseable {
 
     /**
      * Applies the events, then collects their effects: the state is complete before anyone hears of it, so a receiver
-     * may call the queue again at once. A final result counts as delivered here: the in-memory queue delivers once.
+     * may call the queue again at once. Nothing to persist: the final result is delivered after the events, once.
      * Under the lock.
      */
-    private Effects run(Entry entry, List<PartitionEvent> events) {
-        final Effects effects = new Effects();
-        for (PartitionEvent event : events) {
+    private Effects run(Entry entry, Step step) {
+        final Effects effects = new Effects(step.finished());
+        for (PartitionEvent event : step.events()) {
             entry.partition.apply(event);
             switch (event) {
-                case PartitionEvent.Started started -> effects.started.add(started.attempt());
-                case PartitionEvent.Ended ended when ended.result() != null -> effects.finished.add(ended.result());
+                case PartitionEvent.Started started -> effects.started.add(entry.partition.attempt(started));
+                case PartitionEvent.Ended ended when ended.finished() -> keyById.remove(ended.taskId());
                 default -> {
                 }
             }
-        }
-        for (TaskResult result : effects.finished) {
-            keyById.remove(result.taskId());
-            entry.partition.delivered(result.taskId()).forEach(entry.partition::apply);
         }
         schedule(entry);
         dropIfIdle(entry);
@@ -213,17 +199,16 @@ public final class MemoryTaskQueue implements TaskQueue, AutoCloseable {
      */
     private final class Effects {
         private final List<Attempt> started = new ArrayList<>(1);
-        private final List<TaskResult> finished = new ArrayList<>(1);
+        private final Step.Finished finished;
+
+        Effects(Step.Finished finished) {
+            this.finished = finished;
+        }
 
         void carryOut() {
-            for (TaskResult result : finished) {
-                results.put(result).whenComplete((ignored, error) -> {
-                    if (error != null) {
-                        log.error("Failed to store the result: task={}", result.taskId(), error);
-                    }
-                });
+            if (finished != null) {
                 for (ResultCallback callback : callbacks) {
-                    deliver(callback, result);
+                    deliver(callback, finished);
                 }
             }
             for (Attempt attempt : started) {
@@ -238,17 +223,18 @@ public final class MemoryTaskQueue implements TaskQueue, AutoCloseable {
         }
     }
 
-    private static void deliver(ResultCallback callback, TaskResult result) {
+    private static void deliver(ResultCallback callback, Step.Finished finished) {
+        final String taskId = finished.result().taskId();
         final CompletionStage<Void> delivered;
         try {
-            delivered = callback.finished(result);
+            delivered = callback.finished(finished.result(), finished.requests());
         } catch (RuntimeException e) {
-            log.error("Result callback failed: task={}", result.taskId(), e);
+            log.error("Result callback failed: task={}", taskId, e);
             return;
         }
         delivered.whenComplete((ignored, error) -> {
             if (error != null) {
-                log.error("Result callback failed: task={}", result.taskId(), error);
+                log.error("Result callback failed: task={}", taskId, error);
             }
         });
     }

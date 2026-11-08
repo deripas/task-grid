@@ -5,9 +5,9 @@ import io.github.deripas.taskgrid.queue.DelayPolicy;
 import io.github.deripas.taskgrid.queue.QueueSettings;
 import io.github.deripas.taskgrid.queue.TaskQueue;
 import io.github.deripas.taskgrid.queue.memory.MemoryTaskQueue;
-import io.github.deripas.taskgrid.result.ResultStore;
-import io.github.deripas.taskgrid.result.memory.MemoryResultStore;
 import io.github.deripas.taskgrid.task.Blob;
+import io.github.deripas.taskgrid.task.Request;
+import io.github.deripas.taskgrid.task.RequestId;
 import io.github.deripas.taskgrid.task.Task;
 import io.github.deripas.taskgrid.task.TaskResult;
 import io.github.deripas.taskgrid.task.TaskStatus;
@@ -33,6 +33,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -47,7 +49,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class RemoteNodeTest {
     private static final Duration WAIT = Duration.ofSeconds(10);
 
-    private final ResultStore results = new MemoryResultStore(Duration.ofMinutes(1), Clock.systemUTC());
+    private final Map<String, CompletableFuture<TaskResult>> results = new ConcurrentHashMap<>();
     private final List<TestSidecar> sidecars = new ArrayList<>();
     private RemoteWorker worker;
     private MemoryTaskQueue queue;
@@ -171,7 +173,11 @@ class RemoteNodeTest {
     }
 
     private void start(RemoteSettings settings) throws IOException {
-        queue = new MemoryTaskQueue(new QueueSettings(3, Duration.ofMinutes(1)), DelayPolicy.NONE, results);
+        queue = new MemoryTaskQueue(new QueueSettings(3, Duration.ofMinutes(1)), DelayPolicy.NONE);
+        queue.onResult((result, requests) -> {
+            requests.forEach(request -> result(request.id().id()).complete(result));
+            return CompletableFuture.completedFuture(null);
+        });
         worker = new RemoteWorker(settings, Clock.systemUTC());
         Dispatcher.connect(queue, worker);
         final String name = InProcessServerBuilder.generateName();
@@ -190,10 +196,16 @@ class RemoteNodeTest {
     }
 
     private void submit(String id, Map<String, String> meta) {
-        queue.submit(new Task(id, Blob.of(id.getBytes(StandardCharsets.UTF_8)), meta)).toCompletableFuture().join();
+        // the task id is given: tasks with the same payload stay apart
+        final Task task = new Task(id, Blob.of(id.getBytes(StandardCharsets.UTF_8)), meta);
+        queue.submit(task, Request.of(new RequestId("test", "0", id))).toCompletableFuture().join();
     }
 
     private TaskResult await(String id) {
-        return results.await(id, WAIT).toCompletableFuture().join().orElseThrow(() -> new AssertionError("no result for " + id));
+        return result(id).orTimeout(WAIT.toMillis(), TimeUnit.MILLISECONDS).join();
+    }
+
+    private CompletableFuture<TaskResult> result(String requestId) {
+        return results.computeIfAbsent(requestId, id -> new CompletableFuture<>());
     }
 }

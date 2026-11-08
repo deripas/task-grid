@@ -40,7 +40,7 @@ class NodeServerTest {
     private static final Duration WAIT = Duration.ofSeconds(20);
 
     private final RemoteWorker worker = new RemoteWorker(RemoteSettings.DEFAULTS, Clock.systemUTC());
-    private final NodeServer server = new NodeServer(0, new NodeService(worker),
+    private final NodeServer server = new NodeServer(0, List.of(new NodeService(worker)),
         new NodeServer.Keepalive(Duration.ofSeconds(10), Duration.ofMillis(500), Duration.ofSeconds(5)), Duration.ofSeconds(1));
     private final List<AutoCloseable> resources = new ArrayList<>();
 

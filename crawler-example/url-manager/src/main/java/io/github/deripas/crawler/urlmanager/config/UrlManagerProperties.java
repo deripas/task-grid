@@ -9,6 +9,8 @@ import java.util.List;
  * Settings {@code url-manager.*}; defaults - {@code application.yaml}.
  *
  * @param queue           where the tasks live: in this process, or in the cluster of url-managers
+ * @param nodeId          this node among the url-managers: the consumer of its boxes in the mailbox (results of
+ *                        the clients waiting here)
  * @param cluster         the Pekko cluster and its journal, for {@code queue: cluster}
  * @param grpcPort        port of the node for sidecars; 0 - any free one
  * @param grpcKeepalive   HTTP/2 pings of the connections of sidecars
@@ -18,13 +20,16 @@ import java.util.List;
  * @param attemptTimeout  an attempt without a result this long is retried: the limit for a hung or lost attempt,
  *                        above {@code max-timeout} of a fetch
  * @param crawlDelay      pause of a host after a result before its next fetch
- * @param resultTtl       how long a result nobody waits for is kept
+ * @param boxLimit        requests of a client in work at once, per box (client and node): submitted, result not
+ *                        taken yet; more - refused as busy
+ * @param resultTtl       how long a result nobody takes is kept in the mailbox
  * @param shutdownTimeout wait for the gRPC server to terminate
  * @param rabbit          requests over RabbitMQ
  */
 @ConfigurationProperties("url-manager")
 public record UrlManagerProperties(
     QueueMode queue,
+    String nodeId,
     Cluster cluster,
     int grpcPort,
     GrpcKeepalive grpcKeepalive,
@@ -33,6 +38,7 @@ public record UrlManagerProperties(
     int maxAttempts,
     Duration attemptTimeout,
     Duration crawlDelay,
+    int boxLimit,
     Duration resultTtl,
     Duration shutdownTimeout,
     Blob blob,
@@ -49,8 +55,7 @@ public record UrlManagerProperties(
 
         /**
          * In the Pekko cluster of url-managers, persisted in ScyllaDB: a host is one partition in the whole cluster,
-         * tasks survive a stop. Requests over RabbitMQ with {@code ack: after-submit} only; {@code POST /fetch} is off
-         * until results can be awaited on any node.
+         * tasks and the boxes of the results survive a stop; a result is awaited on any node.
          */
         CLUSTER
     }
@@ -105,16 +110,19 @@ public record UrlManagerProperties(
     }
 
     /**
-     * Request queue of RabbitMQ; the connection, prefetch and publisher confirms are {@code spring.rabbitmq.*}.
+     * Request queue of RabbitMQ; the connection is {@code spring.rabbitmq.*}.
      *
-     * @param enabled consume the queue; off - only {@code POST /fetch}
-     * @param queue   durable queue of requests, declared on start
-     * @param ack     when a request is acknowledged
+     * @param enabled  consume the queue; off - only {@code POST /fetch} and gRPC
+     * @param queue    durable queue of requests, declared on start if absent
+     * @param ack      when a request is acknowledged
+     * @param prefetch requests in work at once per instance, including those waiting for the crawl-delay of their
+     *                 host
      */
     public record Rabbit(
         boolean enabled,
         String queue,
-        Ack ack
+        Ack ack,
+        int prefetch
     ) {
     }
 
@@ -124,8 +132,8 @@ public record UrlManagerProperties(
     public enum Ack {
         /**
          * After its reply is confirmed by the broker; the request waits for its page on the url-manager that took it.
-         * For the in-memory queue of tasks, until it is gone: a request of a stopped url-manager stays in RabbitMQ.
-         * The requests of a host must come to one url-manager (consistent-hash exchange by host).
+         * For the in-memory queue of tasks: a request of a stopped url-manager stays in RabbitMQ; the requests of
+         * a host must come to one url-manager (consistent-hash exchange by host). Works in the cluster too.
          */
         AFTER_REPLY,
 
@@ -137,10 +145,6 @@ public record UrlManagerProperties(
     }
 
     public UrlManagerProperties {
-        if (queue == QueueMode.CLUSTER && rabbit.enabled() && rabbit.ack() == Ack.AFTER_REPLY) {
-            throw new IllegalArgumentException("queue: cluster needs rabbit.ack: after-submit - a result may finish on another "
-                + "node than the one waiting for it");
-        }
         if (defaultTimeout.compareTo(maxTimeout) > 0) {
             throw new IllegalArgumentException("default-timeout " + defaultTimeout + " above max-timeout " + maxTimeout);
         }
